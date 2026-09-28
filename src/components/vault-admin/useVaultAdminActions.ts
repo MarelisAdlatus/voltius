@@ -5,6 +5,7 @@ import { useTeamStore } from "@/stores/teamStore";
 import { deleteTeam } from "@/services/teamService";
 import { markSelfDeparture } from "@/services/teamOffboarding";
 import { userFacingReason } from "@/services/errorReason";
+import { logFailure } from "@/lib/logger";
 import { reloadLocalVaultObjectStores } from "@/services/vaultTeamMigration";
 import { deleteVaultWithContents } from "@/services/vaultObjectStores";
 import { makePrivateMemberMessage, type VaultAdminTarget } from "./vaultAdminTarget";
@@ -102,29 +103,45 @@ export function useVaultAdminActions(target: VaultAdminTarget, cb?: VaultAdminCa
         const pfApi = await import("@/services/portForwardingRules");
         const { clearTeamKeyCache } = await import("@/services/teamVaultSync");
         const { useTeamVaultStateStore } = await import("@/stores/teamVaultStateStore");
+        const { readSecretAt, writeSecretAt } = await import("@/services/secretRouting");
+        const { secretKeysOfObjects } = await import("@/services/teamVaultSecretKeys");
+        const { teamSecretCache } = await import("@/services/teamSecretCache");
+        const { listTeamObjects } = await import("@/services/teamObjects");
 
         const vaultId = target.vaultId!;
         const teamId = target.teamId!;
 
         await fetchTeamData(teamId);
+        const copyFailed = () => vaultToast(t("settings.vaults.general.makePrivate.copyFailedToast"), "error");
+        const loadState = useTeamVaultStateStore.getState();
+        const loaded = loadState.statusByTeamId[teamId] === "loaded" && !loadState.credentialsUnavailableByTeamId[teamId];
+        const listedIds = loaded
+          ? await listTeamObjects(teamId).then(
+            (records) => records.filter((r) => !r.deleted_at).map((r) => r.object_id),
+            (e) => {
+              logFailure("makePrivate: list team objects")(e);
+              return null;
+            },
+          )
+          : null;
 
-        // Adopted under each object's own id, never a freshly minted one. The
-        // object's secrets live in the OS keychain under `password:<id>` /
-        // `key:<id>:private` / `identity:<id>:password`, and every cross-reference
-        // (identity_id, key_id, folder_id, parent_folder_id, connection_ids) names
-        // that id too, so a new id would silently strip the copy of its credentials
-        // and its links. `migrateVaultToTeam` preserves ids on the way in for the
-        // same reason. Adopt also replaces an id it has already written, which is
-        // what makes a retry after a partial failure repair the copy rather than
-        // duplicate it.
+        // Own ids: secret keys and cross-references name them, and adopt
+        // overwrites, so a retry repairs a partial copy.
         const conns = useConnectionStore.getState().teamConnections[teamId] ?? [];
         const identities = useIdentityStore.getState().teamIdentities[teamId] ?? [];
         const keys = useKeyStore.getState().teamKeys[teamId] ?? [];
         const folders = useFolderStore.getState().teamFolders[teamId] ?? [];
         const snippets = useSnippetStore.getState().teamSnippets[teamId] ?? [];
         const snippetFolders = useSnippetFolderStore.getState().teamSnippetFolders[teamId] ?? [];
-        const portRules = (usePortForwardingStore.getState().teamRules[teamId] ?? [])
-          .filter((r) => !r.deleted_at || r.updated_at > r.deleted_at);
+        const teamRules = usePortForwardingStore.getState().teamRules[teamId] ?? [];
+        const portRules = teamRules.filter((r) => !r.deleted_at || r.updated_at > r.deleted_at);
+
+        const loadedIds = new Set([...conns, ...identities, ...keys, ...folders, ...snippets, ...snippetFolders, ...teamRules].map((o) => o.id));
+        // A failed or legacy-blob load can be empty or stale: every object the server lists must be in the loaded stores.
+        if (!listedIds || listedIds.some((id) => !loadedIds.has(id))) {
+          await copyFailed();
+          return;
+        }
 
         const writes = await Promise.allSettled([
           ...conns.map((c) => connApi.adoptConnection(c.id, { ...connectionToFormData(c), vault_id: vaultId })),
@@ -141,7 +158,21 @@ export function useVaultAdminActions(target: VaultAdminTarget, cb?: VaultAdminCa
         const rejected = writes.filter((w) => w.status === "rejected");
         if (rejected.length > 0) {
           console.error("Make private aborted: %d of %d writes failed", rejected.length, writes.length, rejected.map((r) => r.reason));
-          await vaultToast(t("settings.vaults.general.makePrivate.copyFailedToast"), "error");
+          await copyFailed();
+          return;
+        }
+
+        // Team secrets live only in memory and on the server, and the server copy goes with the team.
+        const withSecrets = { connection: conns, key: keys, identity: identities };
+        const secretKeys = secretKeysOfObjects((kind) => withSecrets[kind].map((o) => o.id));
+        const copies = await Promise.allSettled(secretKeys.map(async (k) => {
+          const value = await readSecretAt(teamId, k);
+          if (value) await writeSecretAt(null, k, value);
+        }));
+        const failedCopies = copies.filter((c) => c.status === "rejected");
+        if (failedCopies.length > 0) {
+          console.error("Make private aborted: %d secrets not copied", failedCopies.length, failedCopies.map((r) => r.reason));
+          await copyFailed();
           return;
         }
 
@@ -169,6 +200,7 @@ export function useVaultAdminActions(target: VaultAdminTarget, cb?: VaultAdminCa
         usePortForwardingStore.getState().clearTeamRules(teamId);
 
         setVaultTeamId(vaultId, null);
+        teamSecretCache.clearTeam(teamId);
         clearTeamKeyCache();
         useTeamVaultStateStore.getState().setStatus(teamId, "idle");
 

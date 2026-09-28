@@ -59,14 +59,8 @@ import { useAllFolders } from "@/hooks/useAllFolders";
 import { SnippetPickerPanel } from "./SnippetPickerPanel";
 import { getHostDeleteTargetIds, shouldUseBulkHostContextMenu } from "./hostSelection";
 import { buildTeamVaultTransferPlan, type TransferOperation } from "@/services/teamVaultPermissions";
-import { saveTeamVaultSecretForVault } from "@/services/teamVaultSecrets";
-import {
-  publishIdentitySecrets,
-  publishKeySecrets,
-  unpublishIdentitySecrets,
-  unpublishKeySecrets,
-  withdrawOrWarn,
-} from "@/services/vaultObjectSecrets";
+import { keepCachedOnUploadFailure } from "@/services/secretRouting";
+import { moveKeyToVault, moveIdentityToVault } from "@/services/vaultObjectSecrets";
 import { saveHostFromForm, type HostFormSecrets } from "@/services/hostForm";
 import { descendantFolders, itemsInFolderSubtree } from "@/utils/folderTree";
 import { folderDeleteMessages } from "@/utils/folderDeleteMessages";
@@ -83,7 +77,7 @@ export default function HostsPage() {
   const { loadConnections, saveConnection, updateConnection, deleteConnection, renameTag, deleteTag } =
     useConnectionStore();
   const connections = useAllConnections();
-  const { identities } = useIdentityStore();
+  const { identities, updateIdentity } = useIdentityStore();
   const { keys, updateKey } = useKeyStore();
   const { pending: cascadePending, request: requestCascade, confirm: confirmCascade, cancel: cancelCascade } = useVaultCascade();
   const crossVaultPaste = useCrossVaultPasteConfirm();
@@ -359,9 +353,8 @@ export default function HostsPage() {
     duplicateInto: handleDuplicateInto,
     updateKey,
     saveKey: (form) => useKeyStore.getState().saveKey(form),
-    updateIdentity: (id, form) => useIdentityStore.getState().updateIdentity(id, form),
+    updateIdentity,
     saveIdentity: (form) => useIdentityStore.getState().saveIdentity(form),
-    withdrawOrWarn: (p) => withdrawOrWarn(p as Promise<void>),
   }, cascadeRemap.current);
 
   // Every mutation below goes through a store method so vault permission checks apply.
@@ -600,19 +593,13 @@ export default function HostsPage() {
       ],
       execute: async () => {
         try {
-          if (keyNeedsMove) await updateKey(key.id, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId });
-          if (identityNeedsMove) await useIdentityStore.getState().updateIdentity(identity.id, { name: identity.name, username: identity.username, key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId });
-          await moveConnectionToVault(conn, vaultId, updateConnection);
-          // The cascade moves the linked key/identity too, so their material has to
-          // travel with them — into the destination and out of the source.
           if (keyNeedsMove) {
-            await publishKeySecrets(key.id, vaultId);
-            await withdrawOrWarn(unpublishKeySecrets(key.id, key.vault_id ?? "personal"));
+            await moveKeyToVault(key, vaultId, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId }, updateKey);
           }
           if (identityNeedsMove) {
-            await publishIdentitySecrets(identity.id, vaultId);
-            await withdrawOrWarn(unpublishIdentitySecrets(identity.id, identity.vault_id ?? "personal"));
+            await moveIdentityToVault(identity, vaultId, { name: identity.name, username: identity.username, key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId }, updateIdentity);
           }
+          await moveConnectionToVault(conn, vaultId, updateConnection);
         } catch (err) { setError(String(err)); }
       },
     });
@@ -643,15 +630,15 @@ export default function HostsPage() {
               getSecret(`key:${key.id}:private`),
               getSecret(`key:${key.id}:public`),
             ]);
-            if (priv) await storeSecret(`key:${newKey.id}:private`, priv);
-            if (pub) await storeSecret(`key:${newKey.id}:public`, pub);
+            if (priv) await storeSecret(`key:${newKey.id}:private`, priv).catch(keepCachedOnUploadFailure("HostsPage: copy key to vault"));
+            if (pub) await storeSecret(`key:${newKey.id}:public`, pub).catch(keepCachedOnUploadFailure("HostsPage: copy key to vault"));
             newKeyId = newKey.id;
           }
 
           if (identityNeedsCopy) {
             const newIdentity = await useIdentityStore.getState().saveIdentity({ name: identity.name, username: identity.username, key_id: newKeyId, tags: identity.tags, vault_id: vaultId });
             const pwd = await getSecret(`identity:${identity.id}:password`);
-            if (pwd) await storeSecret(`identity:${newIdentity.id}:password`, pwd);
+            if (pwd) await storeSecret(`identity:${newIdentity.id}:password`, pwd).catch(keepCachedOnUploadFailure("HostsPage: copy identity to vault"));
             newIdentityId = newIdentity.id;
           }
 
@@ -660,7 +647,7 @@ export default function HostsPage() {
             vaultId, keepName: !destHasConnName, identityId: newIdentityId,
           }));
           if (newConn) {
-            await copyConnectionSecrets(conn.id, newConn.id, vaultId, { copyKey: !conn.key_id, publish: "direct" });
+            await copyConnectionSecrets(conn.id, newConn.id, { copyKey: !conn.key_id });
           }
         } catch (err) { setError(String(err)); }
       },
@@ -712,10 +699,10 @@ export default function HostsPage() {
       execute: async () => {
         try {
           for (const key of keyMap.values()) {
-            await updateKey(key.id, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId });
+            await moveKeyToVault(key, vaultId, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId }, updateKey);
           }
           for (const identity of identityMap.values()) {
-            await useIdentityStore.getState().updateIdentity(identity.id, { name: identity.name, username: identity.username, key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId });
+            await moveIdentityToVault(identity, vaultId, { name: identity.name, username: identity.username, key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId }, updateIdentity);
           }
           await migrateFolderTreeToVault(folder, folder.parent_folder_id ?? null, vaultId);
         } catch (err) { setError(String(err)); }
@@ -766,12 +753,10 @@ export default function HostsPage() {
               getSecret(`key:${key.id}:public`),
             ]);
             if (priv) {
-              await storeSecret(`key:${newKey.id}:private`, priv);
-              await saveTeamVaultSecretForVault(vaultId, `key:${newKey.id}:private`, priv).catch(() => {});
+              await storeSecret(`key:${newKey.id}:private`, priv).catch(keepCachedOnUploadFailure("HostsPage: copy folder key"));
             }
             if (pub) {
-              await storeSecret(`key:${newKey.id}:public`, pub);
-              await saveTeamVaultSecretForVault(vaultId, `key:${newKey.id}:public`, pub).catch(() => {});
+              await storeSecret(`key:${newKey.id}:public`, pub).catch(keepCachedOnUploadFailure("HostsPage: copy folder key"));
             }
             keyIdMap.set(key.id, newKey.id);
           }
@@ -783,8 +768,7 @@ export default function HostsPage() {
             const newIdentity = await useIdentityStore.getState().saveIdentity({ name: identity.name, username: identity.username, key_id: newKeyId, tags: identity.tags, vault_id: vaultId });
             const pwd = await getSecret(`identity:${identity.id}:password`);
             if (pwd) {
-              await storeSecret(`identity:${newIdentity.id}:password`, pwd);
-              await saveTeamVaultSecretForVault(vaultId, `identity:${newIdentity.id}:password`, pwd).catch(() => {});
+              await storeSecret(`identity:${newIdentity.id}:password`, pwd).catch(keepCachedOnUploadFailure("HostsPage: copy folder identity"));
             }
             identityIdMap.set(identity.id, newIdentity.id);
           }
@@ -799,7 +783,7 @@ export default function HostsPage() {
               keyId: keyIdMap.get(conn.key_id ?? ""),
             }));
             if (newConn) {
-              await copyConnectionSecrets(conn.id, newConn.id, vaultId, { copyKey: !conn.key_id, publish: "direct" });
+              await copyConnectionSecrets(conn.id, newConn.id, { copyKey: !conn.key_id });
             }
           }
         } catch (err) { setError(String(err)); }

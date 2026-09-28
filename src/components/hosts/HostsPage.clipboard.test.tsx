@@ -32,7 +32,9 @@ const h = vi.hoisted(() => ({
   confirmCrossVault: vi.fn(async () => true),
   getSecret: vi.fn(async (_key: string) => null as string | null),
   storeSecret: vi.fn(async (_key: string, _value: string) => {}),
-  saveTeamVaultSecretForVault: vi.fn(async (_vaultId: string, _key: string, _value: string) => {}),
+  moveWithSecrets: vi.fn(async (_k: string, _o: unknown, _t: string, update: () => Promise<unknown>) => {
+    await update();
+  }),
   saveKey: vi.fn(),
   updateKey: vi.fn(async () => {}),
   saveIdentity: vi.fn(),
@@ -223,7 +225,15 @@ vi.mock("@/stores/syncPrefsStore", () => ({
   }),
 }));
 vi.mock("@/services/vault", () => ({ storeSecret: h.storeSecret, getSecret: h.getSecret }));
-vi.mock("@/services/teamVaultSecrets", () => ({ saveTeamVaultSecretForVault: h.saveTeamVaultSecretForVault }));
+vi.mock("@/services/vaultObjectSecrets", () => ({
+  moveWithSecrets: h.moveWithSecrets,
+  moveKeyToVault: vi.fn(async (
+    key: { id: string }, _vaultId: string, data: unknown, updateKey: (id: string, data: unknown) => Promise<unknown>,
+  ) => { await updateKey(key.id, data); }),
+  moveIdentityToVault: vi.fn(async (
+    identity: { id: string }, _vaultId: string, data: unknown, updateIdentity: (id: string, data: unknown) => Promise<unknown>,
+  ) => { await updateIdentity(identity.id, data); }),
+}));
 vi.mock("@/services/teamVaultPermissions", () => ({ buildTeamVaultTransferPlan: () => ({ allowed: true }) }));
 vi.mock("@/services/hostForm", () => ({ saveHostFromForm: vi.fn() }));
 
@@ -399,21 +409,20 @@ test("a cut into a team-vault folder migrates the connection instead of only rep
   );
 });
 
-test("a cut into a team vault republishes the connection's secret to that vault", async () => {
+test("a cut into a team vault transfers the connection's secret to that vault", async () => {
   h.folders = [folder("tf", { vault_id: "team-1" })];
   h.connections = [conn("c1", { vault_id: "personal" })];
   h.selected = ["c1"];
   h.activeFolderId = "tf";
-  h.getSecret.mockImplementation(async (k: string) => (k === "password:c1" ? "s3cret" : null));
   render(<HostsPage />);
 
   await dispatch("voltius:clipboard-cut");
   await dispatch("voltius:clipboard-paste");
 
-  expect(h.saveTeamVaultSecretForVault).toHaveBeenCalledWith("team-1", "password:c1", "s3cret");
+  expect(h.moveWithSecrets).toHaveBeenCalledWith("connection", expect.objectContaining({ id: "c1", vault_id: "personal" }), "team-1", expect.any(Function));
 });
 
-test("a copy into a team vault republishes the duplicate's secret under its new id", async () => {
+test("a copy into a team vault stores the duplicate's secret under its new id", async () => {
   h.folders = [folder("tf", { vault_id: "team-1" })];
   h.connections = [conn("c1", { vault_id: "personal" })];
   h.selected = ["c1"];
@@ -427,7 +436,6 @@ test("a copy into a team vault republishes the duplicate's secret under its new 
   await dispatch("voltius:clipboard-paste");
 
   expect(h.storeSecret).toHaveBeenCalledWith("password:new-conn", "s3cret");
-  expect(h.saveTeamVaultSecretForVault).toHaveBeenCalledWith("team-1", "password:new-conn", "s3cret");
 });
 
 test("a paste at the root leaves each object in the vault it already had", async () => {

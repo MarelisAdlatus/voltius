@@ -41,9 +41,8 @@ import type { Folder, Identity, IdentityFormData, SshKey, SshKeyFormData } from 
 import { SidePanelLayout } from "@/components/shared/SidePanelLayout";
 import { useSyncedFormKey } from "@/hooks/useSyncedFormKey";
 import { buildTeamVaultTransferPlan, type TransferOperation } from "@/services/teamVaultPermissions";
-import { saveTeamVaultSecretForVault } from "@/services/teamVaultSecrets";
-import { publishIdentitySecrets, publishKeySecrets } from "@/services/vaultObjectSecrets";
-import { transferKeySecrets, transferIdentitySecrets } from "@/services/vaultSecrets";
+import { keepCachedOnUploadFailure } from "@/services/secretRouting";
+import { moveKeyToVault, moveIdentityToVault } from "@/services/vaultObjectSecrets";
 import { usePageClipboard } from "@/hooks/usePageClipboard";
 import { vaultClipboardBase } from "@/utils/vaultClipboardBase";
 import { keychainClipboardHalf } from "@/services/clipboard/keychain";
@@ -545,8 +544,7 @@ export default function KeychainPage() {
 
   const handleMoveKeyToVault = async (key: SshKey, vaultId: string) => {
     try {
-      await updateKey(key.id, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId });
-      await transferKeySecrets(key.id, key.vault_id ?? "personal", vaultId);
+      await moveKeyToVault(key, vaultId, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId }, updateKey);
     }
     catch (err) { setError(String(err)); }
   };
@@ -559,10 +557,9 @@ export default function KeychainPage() {
         getSecret(`key:${key.id}:public`),
         getSecret(`key:${key.id}:passphrase`),
       ]);
-      if (priv) await storeSecret(`key:${newKey.id}:private`, priv);
-      if (pub) await storeSecret(`key:${newKey.id}:public`, pub);
-      if (pass) await storeSecret(`key:${newKey.id}:passphrase`, pass);
-      await publishKeySecrets(newKey.id, vaultId);
+      if (priv) await storeSecret(`key:${newKey.id}:private`, priv).catch(keepCachedOnUploadFailure("KeychainPage: copy key to vault"));
+      if (pub) await storeSecret(`key:${newKey.id}:public`, pub).catch(keepCachedOnUploadFailure("KeychainPage: copy key to vault"));
+      if (pass) await storeSecret(`key:${newKey.id}:passphrase`, pass).catch(keepCachedOnUploadFailure("KeychainPage: copy key to vault"));
     } catch (err) { setError(String(err)); }
   };
 
@@ -579,14 +576,12 @@ export default function KeychainPage() {
       execute: async () => {
         try {
           if (keyNeedsMove) {
-            await updateKey(key.id, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId });
-            await transferKeySecrets(key.id, key.vault_id ?? "personal", vaultId);
+            await moveKeyToVault(key, vaultId, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId }, updateKey);
           }
-          await updateIdentity(identity.id, {
+          await moveIdentityToVault(identity, vaultId, {
             name: identity.name, username: identity.username,
             key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId,
-          });
-          await transferIdentitySecrets(identity.id, identity.vault_id ?? "personal", vaultId);
+          }, updateIdentity);
         } catch (err) { setError(String(err)); }
       },
     });
@@ -612,16 +607,14 @@ export default function KeychainPage() {
               getSecret(`key:${key.id}:private`),
               getSecret(`key:${key.id}:public`),
             ]);
-            if (priv) await storeSecret(`key:${newKey.id}:private`, priv);
-            if (pub) await storeSecret(`key:${newKey.id}:public`, pub);
-            await publishKeySecrets(newKey.id, vaultId);
+            if (priv) await storeSecret(`key:${newKey.id}:private`, priv).catch(keepCachedOnUploadFailure("KeychainPage: copy identity's key to vault"));
+            if (pub) await storeSecret(`key:${newKey.id}:public`, pub).catch(keepCachedOnUploadFailure("KeychainPage: copy identity's key to vault"));
             newKeyId = newKey.id;
           }
 
           const newIdentity = await saveIdentity({ name: identity.name, username: identity.username, key_id: newKeyId, tags: identity.tags, vault_id: vaultId });
           const pwd = await getSecret(`identity:${identity.id}:password`);
-          if (pwd) await storeSecret(`identity:${newIdentity.id}:password`, pwd);
-          await publishIdentitySecrets(newIdentity.id, vaultId);
+          if (pwd) await storeSecret(`identity:${newIdentity.id}:password`, pwd).catch(keepCachedOnUploadFailure("KeychainPage: copy identity to vault"));
         } catch (err) { setError(String(err)); }
       },
     });
@@ -656,7 +649,6 @@ export default function KeychainPage() {
   });
 
   const handleMoveFolderToVault = (folder: Folder, vaultId: string) => {
-    const subFolders = getAllSubFolders(folder.id);
     const treeKeys = keysInFolderTree(folder.id);
     const treeIdentities = identitiesInFolderTree(folder.id);
     const targetVaultName = vaultOptions.find((v) => v.id === vaultId)?.name ?? vaultId;
@@ -672,13 +664,7 @@ export default function KeychainPage() {
       ],
       execute: async () => {
         try {
-          await moveFolderTreeToVault({ root: folder, subFolders, parentFolderId: folder.parent_folder_id ?? null, vaultId, updateFolder });
-          for (const key of treeKeys) {
-            await updateKey(key.id, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId });
-          }
-          for (const identity of treeIdentities) {
-            await useIdentityStore.getState().updateIdentity(identity.id, { name: identity.name, username: identity.username, key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId });
-          }
+          await migrateFolderTreeToVault(folder, folder.parent_folder_id ?? null, vaultId);
         } catch (err) { setError(String(err)); }
       },
     });
@@ -713,15 +699,15 @@ export default function KeychainPage() {
               getSecret(`key:${key.id}:private`),
               getSecret(`key:${key.id}:public`),
             ]);
-            if (priv) await storeSecret(`key:${newKey.id}:private`, priv);
-            if (pub) await storeSecret(`key:${newKey.id}:public`, pub);
+            if (priv) await storeSecret(`key:${newKey.id}:private`, priv).catch(keepCachedOnUploadFailure("KeychainPage: copy folder key"));
+            if (pub) await storeSecret(`key:${newKey.id}:public`, pub).catch(keepCachedOnUploadFailure("KeychainPage: copy folder key"));
             keyIdMap.set(key.id, newKey.id);
           }
           for (const identity of treeIdentities) {
             const newKeyId = identity.key_id ? (keyIdMap.get(identity.key_id) ?? identity.key_id) : undefined;
             const newIdentity = await useIdentityStore.getState().saveIdentity({ name: identity.name, username: identity.username, key_id: newKeyId, tags: identity.tags, vault_id: vaultId });
             const pwd = await getSecret(`identity:${identity.id}:password`);
-            if (pwd) await storeSecret(`identity:${newIdentity.id}:password`, pwd);
+            if (pwd) await storeSecret(`identity:${newIdentity.id}:password`, pwd).catch(keepCachedOnUploadFailure("KeychainPage: copy folder identity"));
           }
         } catch (err) { setError(String(err)); }
       },
@@ -749,12 +735,12 @@ export default function KeychainPage() {
       folder_id: folderId ?? undefined,
       vault_id: vaultId,
     });
+    // Same copy as plugins/domains/objects.ts duplicators.key; kept apart: component vs plugin ports.
     for (const part of ["private", "public", "passphrase"]) {
       const value = await getSecret(`key:${key.id}:${part}`);
       if (!value) continue;
       const localKey = `key:${newKey.id}:${part}`;
-      await storeSecret(localKey, value);
-      await saveTeamVaultSecretForVault(vaultId, localKey, value).catch(() => {});
+      await storeSecret(localKey, value).catch(keepCachedOnUploadFailure("duplicateKeyInto"));
     }
     return newKey;
   }
@@ -778,8 +764,7 @@ export default function KeychainPage() {
     const pwd = await getSecret(`identity:${identity.id}:password`);
     if (pwd) {
       const localKey = `identity:${newIdentity.id}:password`;
-      await storeSecret(localKey, pwd);
-      await saveTeamVaultSecretForVault(vaultId, localKey, pwd).catch(() => {});
+      await storeSecret(localKey, pwd).catch(keepCachedOnUploadFailure("duplicateIdentityInto"));
     }
     return newIdentity;
   }
@@ -822,11 +807,6 @@ export default function KeychainPage() {
     return root;
   };
 
-  /**
-   * Moves a folder subtree into `vaultId`, reparenting the root at the same time.
-   * Same updateFolder/updateKey/updateIdentity path handleMoveFolderToVault uses, so
-   * the team-vault migration logic in the stores applies.
-   */
   const migrateFolderTreeToVault = async (
     folder: Folder,
     parentFolderId: string | null,
@@ -834,14 +814,10 @@ export default function KeychainPage() {
   ) => {
     await moveFolderTreeToVault({ root: folder, subFolders: getAllSubFolders(folder.id), parentFolderId, vaultId, updateFolder });
     for (const key of keysInFolderTree(folder.id)) {
-      const from = key.vault_id ?? "personal";
-      await updateKey(key.id, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId });
-      await transferKeySecrets(key.id, from, vaultId);
+      await moveKeyToVault(key, vaultId, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId }, updateKey);
     }
     for (const identity of identitiesInFolderTree(folder.id)) {
-      const from = identity.vault_id ?? "personal";
-      await updateIdentity(identity.id, { name: identity.name, username: identity.username, key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId });
-      await transferIdentitySecrets(identity.id, from, vaultId);
+      await moveIdentityToVault(identity, vaultId, { name: identity.name, username: identity.username, key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId }, updateIdentity);
     }
   };
 

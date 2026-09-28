@@ -149,16 +149,44 @@ export async function resetVault(): Promise<void> {
   }
 }
 
-export async function storeSecret(key: string, value: string): Promise<void> {
+export async function storeLocalSecret(key: string, value: string): Promise<void> {
   await withUnlocked("secrets_set", { key, value });
 }
 
-export async function getSecret(key: string): Promise<string | null> {
+export async function getLocalSecret(key: string): Promise<string | null> {
   return withUnlocked<string | null>("secrets_get", { key });
 }
 
-export async function deleteSecret(key: string): Promise<void> {
+export async function deleteLocalSecret(key: string): Promise<void> {
   await withUnlocked("secrets_delete", { key });
+}
+
+export async function purgeLocalSecrets(keys: string[]): Promise<string[]> {
+  if (keys.length === 0) return [];
+  return withUnlocked<string[]>("secrets_purge", { keys });
+}
+
+async function routeOf(key: string) {
+  const [{ teamIdOwningSecret }, routing] = await Promise.all([
+    import("@/services/teamSecretOwnership"),
+    import("@/services/secretRouting"),
+  ]);
+  return { teamId: teamIdOwningSecret(key), routing };
+}
+
+export async function getSecret(key: string): Promise<string | null> {
+  const { teamId, routing } = await routeOf(key);
+  return routing.readSecretAt(teamId, key);
+}
+
+export async function storeSecret(key: string, value: string): Promise<void> {
+  const { teamId, routing } = await routeOf(key);
+  await routing.writeSecretAt(teamId, key, value);
+}
+
+export async function deleteSecret(key: string): Promise<void> {
+  const { teamId, routing } = await routeOf(key);
+  await routing.removeSecretAt(teamId, key);
 }
 
 export function getVaultKey(): number[] | null {
@@ -172,13 +200,13 @@ export async function unlockVaultIfNeeded(): Promise<void> {
 // ─── Secrets scopés aux plugins ──────────────────────────────────────────
 
 export async function storePluginSecret(pluginId: string, key: string, value: string): Promise<void> {
-  return storeSecret(`plugin:${pluginId}:${key}`, value);
+  return storeLocalSecret(`plugin:${pluginId}:${key}`, value);
 }
 
 export async function getPluginSecret(pluginId: string, key: string): Promise<string | null> {
-  return getSecret(`plugin:${pluginId}:${key}`);
+  return getLocalSecret(`plugin:${pluginId}:${key}`);
 }
 
 export async function deletePluginSecret(pluginId: string, key: string): Promise<void> {
-  return deleteSecret(`plugin:${pluginId}:${key}`);
+  return deleteLocalSecret(`plugin:${pluginId}:${key}`);
 }

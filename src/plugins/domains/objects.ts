@@ -33,15 +33,8 @@ import { moveFolderTreeToVault } from "@/utils/folderMove";
 import { snippetToForm } from "@/utils/snippetForm";
 import { ruleToForm } from "@/utils/portForwardingForm";
 import { getSecret, storeSecret } from "@/services/vault";
-import {
-  transferIdentitySecrets,
-  transferKeySecrets,
-} from "@/services/vaultSecrets";
-import {
-  publishIdentitySecrets,
-  publishKeySecrets,
-  withdrawOrWarn,
-} from "@/services/vaultObjectSecrets";
+import { keepCachedOnUploadFailure } from "@/services/secretRouting";
+import { moveKeyToVault, moveIdentityToVault } from "@/services/vaultObjectSecrets";
 import { duplicateConnection, moveConnectionToVault } from "@/services/connectionDuplicate";
 import { vaultOf } from "./vaultOf";
 
@@ -209,7 +202,7 @@ function resolveTab(
 
 const copySecret = async (from: string, to: string): Promise<void> => {
   const value = await getSecret(from).catch(() => null);
-  if (value) await storeSecret(to, value);
+  if (value) await storeSecret(to, value).catch(keepCachedOnUploadFailure("copySecret"));
 };
 
 interface DuplicateOpts {
@@ -239,7 +232,6 @@ function duplicators(ports: ObjectPorts) {
     for (const part of ["private", "public", "passphrase"]) {
       await copySecret(`key:${k.id}:${part}`, `key:${created.id}:${part}`);
     }
-    await publishKeySecrets(created.id, vaultId);
     return created;
   };
 
@@ -254,7 +246,6 @@ function duplicators(ports: ObjectPorts) {
       vault_id: vaultId,
     });
     await copySecret(`identity:${i.id}:password`, `identity:${created.id}:password`);
-    await publishIdentitySecrets(created.id, vaultId);
     return created;
   };
 
@@ -367,19 +358,15 @@ function folderOpsFor(ports: ObjectPorts, tab: ObjectTab): FolderOps {
     }
     if (tab === "keychain") {
       for (const k of under(ports.keys(), rootId)) {
-        const from = vaultOf(k);
-        await ports.updateKey(k.id, {
+        await moveKeyToVault(k, vaultId, {
           name: k.name, key_type: k.key_type, tags: k.tags, folder_id: k.folder_id, vault_id: vaultId,
-        });
-        await transferKeySecrets(k.id, from, vaultId);
+        }, ports.updateKey);
       }
       for (const i of under(ports.identities(), rootId)) {
-        const from = vaultOf(i);
-        await ports.updateIdentity(i.id, {
+        await moveIdentityToVault(i, vaultId, {
           name: i.name, username: i.username, key_id: i.key_id, tags: i.tags,
           folder_id: i.folder_id, vault_id: vaultId,
-        });
-        await transferIdentitySecrets(i.id, from, vaultId);
+        }, ports.updateIdentity);
       }
       return;
     }
@@ -443,7 +430,6 @@ function halfFor(
       saveKey: ports.saveKey,
       updateIdentity: ports.updateIdentity,
       saveIdentity: ports.saveIdentity,
-      withdrawOrWarn: (p) => withdrawOrWarn(p as Promise<void>),
     }, cascadeRemap);
   }
   if (tab === "keychain") {

@@ -7,7 +7,8 @@ const h = vi.hoisted(() => ({
   unwrap: vi.fn(),
   getSecret: vi.fn(),
   storeSecret: vi.fn(),
-  deleteSecret: vi.fn(),
+  purge: vi.fn(),
+  getLocalSecret: vi.fn(async (_key: string) => null as string | null),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
 vi.mock("@/services/http", () => ({ appFetch: h.appFetch }));
@@ -20,11 +21,13 @@ vi.mock("@/services/multiplayerService", () => ({
 vi.mock("@/services/vault", () => ({
   getSecret: h.getSecret,
   storeSecret: h.storeSecret,
-  deleteSecret: h.deleteSecret,
+  purgeLocalSecrets: h.purge,
+  getLocalSecret: h.getLocalSecret,
 }));
 vi.mock("@/services/teamObjects", () => ({ listTeamObjects: vi.fn(async () => []) }));
 
-import { reencryptLegacyBlobIfStale, clearTeamKeyCache } from "./teamVaultSync.ts";
+import { reencryptLegacyBlobIfStale, fetchTeamData, clearTeamKeyCache } from "./teamVaultSync.ts";
+import { teamSecretCache } from "./teamSecretCache";
 
 function futureJwt(): string {
   const exp = Math.floor(Date.now() / 1000) + 3600;
@@ -47,8 +50,9 @@ beforeEach(() => {
   h.unwrap.mockReset();
   h.getSecret.mockReset();
   h.storeSecret.mockReset();
-  h.deleteSecret.mockReset();
+  h.purge.mockReset().mockImplementation(async (keys: string[]) => keys);
   clearTeamKeyCache();
+  teamSecretCache.clearAll();
 });
 
 test("no legacy blob (404): does not PUT anything", async () => {
@@ -119,4 +123,50 @@ test("blob behind the current version: decrypts with the OLD key, re-encrypts wi
   const body = JSON.parse((putCall![1] as RequestInit).body as string);
   expect(body.key_version).toBe(3);
   expect(body.blob).toBe(btoa(String.fromCharCode(9, 9, 9)));
+});
+
+function mockLegacyBlobLoad(secrets: Record<string, string> = {}): void {
+  h.invoke.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
+    if (cmd === "keychain_get") return args.key === "server_url" ? "https://s" : futureJwt();
+    if (cmd === "backup_decrypt") return { files: {}, secrets };
+    return null;
+  });
+  h.getUserPublicKey.mockResolvedValue({ user_id: "u1", handle: "u1", public_key: "pk" });
+  h.unwrap.mockResolvedValue(new Uint8Array([9]));
+  h.appFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    const method = methodOf(init);
+    if (url.endsWith("/vault-key") && method === "GET") {
+      return res(200, { wrapped_key: "wk", wrapped_by_user_id: "u1", key_version: 1 });
+    }
+    if (url.endsWith("/sync-blob") && method === "GET") {
+      return res(200, { blob: btoa("blob-bytes"), updated_at: "", key_version: 1 });
+    }
+    throw new Error(`unexpected fetch ${url} ${method}`);
+  });
+}
+
+test("fetching a team's legacy blob replaces the team's secret cache, never storing through secrets_set", async () => {
+  const BLOB_SECRETS = { "password:c1": "hunter2" };
+  mockLegacyBlobLoad(BLOB_SECRETS);
+
+  await fetchTeamData("t1");
+
+  expect(teamSecretCache.entries("t1")).toEqual(new Map(Object.entries(BLOB_SECRETS)));
+  expect(h.invoke.mock.calls.some(([cmd]) => cmd === "secrets_set")).toBe(false);
+});
+
+test("a foreground legacy-blob load purges the team's local secret keys once", async () => {
+  mockLegacyBlobLoad();
+
+  await fetchTeamData("t1");
+
+  expect(h.purge).toHaveBeenCalledTimes(1);
+});
+
+test("a background legacy-blob load never purges", async () => {
+  mockLegacyBlobLoad();
+
+  await fetchTeamData("t1", { background: true });
+
+  expect(h.purge).not.toHaveBeenCalled();
 });

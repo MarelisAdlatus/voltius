@@ -2,13 +2,8 @@ import type { Connection, ConnectionFormData, Identity, IdentityFormData, SshKey
 import type { VaultClipboardKind } from "@/stores/vaultClipboardStore";
 import type { CascadeEntry } from "@/services/vaultClipboard";
 import { getSecret, storeSecret } from "@/services/vault";
-import {
-  publishKeySecrets,
-  unpublishKeySecrets,
-  publishIdentitySecrets,
-  unpublishIdentitySecrets,
-  transferConnectionSecrets,
-} from "@/services/vaultSecrets";
+import { keepCachedOnUploadFailure } from "@/services/secretRouting";
+import { moveWithSecrets, moveKeyToVault, moveIdentityToVault } from "@/services/vaultObjectSecrets";
 import { connectionToFormData } from "@/stores/connectionStore";
 import { nameIsFree } from "@/utils/cloneName";
 import type { ClipboardHalf } from "./types";
@@ -35,7 +30,6 @@ export interface ConnectionsClipboardDeps {
   saveKey: (form: KeyFormData) => Promise<{ id: string }>;
   updateIdentity: (id: string, form: IdentityFormData) => Promise<unknown>;
   saveIdentity: (form: IdentityFormData) => Promise<{ id: string }>;
-  withdrawOrWarn: (p: Promise<unknown>) => Promise<unknown>;
 }
 
 // ── Paste cascade: the key/identity a pasted host needs in the destination ──
@@ -162,14 +156,11 @@ export function connectionsClipboardHalf(
         plan.entries.find((e) => e.type === type && e.label === label)?.action ?? "copy";
 
       for (const key of plan.keys) {
-        const from = key.vault_id ?? "personal";
         if (actionOf("key", key.name ?? "Unnamed key") === "move") {
-          await deps.updateKey(key.id, {
+          await moveKeyToVault(key, destination, {
             name: key.name, key_type: key.key_type, tags: key.tags,
             folder_id: key.folder_id, vault_id: destination,
-          });
-          await publishKeySecrets(key.id, destination);
-          await deps.withdrawOrWarn(unpublishKeySecrets(key.id, from));
+          }, deps.updateKey);
           continue;
         }
         const created = await deps.saveKey({
@@ -179,25 +170,21 @@ export function connectionsClipboardHalf(
           getSecret(`key:${key.id}:private`).catch(() => null),
           getSecret(`key:${key.id}:public`).catch(() => null),
         ]);
-        if (priv) await storeSecret(`key:${created.id}:private`, priv);
-        if (pub) await storeSecret(`key:${created.id}:public`, pub);
-        await publishKeySecrets(created.id, destination);
+        if (priv) await storeSecret(`key:${created.id}:private`, priv).catch(keepCachedOnUploadFailure("clipboard: paste key"));
+        if (pub) await storeSecret(`key:${created.id}:public`, pub).catch(keepCachedOnUploadFailure("clipboard: paste key"));
         cascadeRemap.keys.set(key.id, created.id);
       }
 
       for (const identity of plan.identities) {
-        const from = identity.vault_id ?? "personal";
         // Its key travelled first, so the identity follows whichever copy landed.
         const keyId = identity.key_id
           ? cascadeRemap.keys.get(identity.key_id) ?? identity.key_id
           : undefined;
         if (actionOf("identity", identity.name || identity.username) === "move") {
-          await deps.updateIdentity(identity.id, {
+          await moveIdentityToVault(identity, destination, {
             name: identity.name, username: identity.username, key_id: keyId,
             tags: identity.tags, folder_id: identity.folder_id, vault_id: destination,
-          });
-          await publishIdentitySecrets(identity.id, destination);
-          await deps.withdrawOrWarn(unpublishIdentitySecrets(identity.id, from));
+          }, deps.updateIdentity);
           continue;
         }
         const created = await deps.saveIdentity({
@@ -205,8 +192,7 @@ export function connectionsClipboardHalf(
           tags: identity.tags, vault_id: destination,
         });
         const pwd = await getSecret(`identity:${identity.id}:password`).catch(() => null);
-        if (pwd) await storeSecret(`identity:${created.id}:password`, pwd);
-        await publishIdentitySecrets(created.id, destination);
+        if (pwd) await storeSecret(`identity:${created.id}:password`, pwd).catch(keepCachedOnUploadFailure("clipboard: paste identity"));
         cascadeRemap.identities.set(identity.id, created.id);
       }
     },
@@ -243,16 +229,15 @@ export function connectionsClipboardHalf(
           sameVault.push(id);
           continue;
         }
-        const from = conn.vault_id ?? "personal";
         const links = remappedLinks(conn);
-        await deps.updateConnection(id, {
-          ...connectionToFormData(conn),
-          identity_id: links.identityId,
-          key_id: links.keyId,
-          folder_id: folderId ?? undefined,
-          vault_id: vaultId,
-        });
-        await transferConnectionSecrets(id, from, vaultId);
+        await moveWithSecrets("connection", conn, vaultId, () =>
+          deps.updateConnection(id, {
+            ...connectionToFormData(conn),
+            identity_id: links.identityId,
+            key_id: links.keyId,
+            folder_id: folderId ?? undefined,
+            vault_id: vaultId,
+          }));
       }
       // moveObjectsToFolder writes through to the DB without touching the connection
       // store, so the reload is what makes the paste visible — as in `onDropToFolder`.

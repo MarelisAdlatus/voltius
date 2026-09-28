@@ -5,18 +5,32 @@ const h = vi.hoisted(() => ({
   failing: new Set<string>(),
   notWiped: [] as string[],
   departures: new Map<string, string>(),
+  ownershipThrowsFor: new Set<string>(),
+  linkedVaults: [] as { id: string; teamId: string }[],
 }));
 
 vi.mock("@/services/vault", () => ({
   getSecret: vi.fn(),
   storeSecret: vi.fn(),
-  deleteSecret: vi.fn(async (k: string) => {
-    if (h.failing.has(k)) throw new Error("keychain unavailable");
-    h.deleted.push(k);
+  purgeLocalSecrets: vi.fn(async (keys: string[]) => {
+    if (keys.some((k) => h.failing.has(k))) throw new Error("keychain unavailable");
+    h.deleted.push(...keys);
+    return keys;
   }),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
+
+vi.mock("@/services/teamSecretOwnership", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/services/teamSecretOwnership")>();
+  return {
+    ...real,
+    teamObjectSecretKeys: (tid: string) => {
+      if (h.ownershipThrowsFor.has(tid)) throw new Error("store blew up");
+      return real.teamObjectSecretKeys(tid);
+    },
+  };
+});
 
 vi.mock("@/services/teamService", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/services/teamService")>()),
@@ -42,18 +56,20 @@ vi.mock("@/services/teamInbox", () => ({
   }),
 }));
 
-// The step that unlinks local vaults sits between the removal event and the
-// rest of the offboarding sequence; a store that throws on read is the
-// cheapest stand-in for "anything in here throws".
+// Stand-in for "any later offboarding step throws": unlinking the team's local vault fails.
 vi.mock("@/stores/vaultStore", () => ({
   useVaultStore: {
-    getState: () => {
-      throw new Error("vaultStore blew up");
-    },
+    getState: () => ({
+      vaults: h.linkedVaults,
+      setVaultTeamId: () => {
+        throw new Error("vaultStore blew up");
+      },
+    }),
   },
 }));
 
 import { handleRealtimeEvent } from "./sync";
+import { teamSecretCache } from "@/services/teamSecretCache";
 import { usePendingSecretWipeStore } from "@/stores/pendingSecretWipeStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useKeyStore } from "@/stores/keyStore";
@@ -66,6 +82,7 @@ beforeEach(() => {
   h.failing = new Set();
   h.notWiped = [];
   h.departures = new Map();
+  h.ownershipThrowsFor = new Set();
   vi.mocked(notifyMembershipEnded).mockClear();
   vi.mocked(notifySecretsNotWiped).mockClear();
   usePendingSecretWipeStore.getState().clearAll();
@@ -81,6 +98,7 @@ beforeEach(() => {
  * the next test's stores.
  */
 function seedTeam(tid: string): void {
+  h.linkedVaults.push({ id: `v-${tid}`, teamId: tid });
   useTeamStore.setState((s) => ({
     teams: [...s.teams, { id: tid, name: `team-${tid}`, role_ids: [] } as never],
   }));
@@ -112,7 +130,12 @@ test("queues and reports the secrets a failed wipe left on the device", async ()
   await handleRealtimeEvent("membership_changed", "device-1");
 
   await vi.waitFor(() => {
-    expect(usePendingSecretWipeStore.getState().keysByTeamId).toEqual({ t2: ["password:c-t2"] });
+    expect(usePendingSecretWipeStore.getState().keysByTeamId).toEqual({
+      t2: expect.arrayContaining([
+        "password:c-t2", "key:c-t2", "passphrase:c-t2", "proxy_password:c-t2",
+        "key:k-t2:private", "key:k-t2:public", "key:k-t2:passphrase",
+      ]),
+    });
     expect(h.notWiped).toEqual(["t2/team-t2"]);
   });
 });
@@ -155,4 +178,15 @@ test("a voluntary leave still wipes, and only the notice is suppressed", async (
 
   await vi.waitFor(() => expect(h.deleted).toContain("password:c-t5"));
   expect(notifyMembershipEnded).not.toHaveBeenCalled();
+});
+
+test("a wipe that throws still leaves the removed member without the team's cached secrets", async () => {
+  seedTeam("t6");
+  h.ownershipThrowsFor.add("t6");
+  teamSecretCache.set("t6", "password:c-t6", "pw");
+
+  await handleRealtimeEvent("membership_changed", "device-1");
+
+  await vi.waitFor(() => expect(notifyMembershipEnded).toHaveBeenCalledWith("team-t6"));
+  expect(teamSecretCache.get("t6", "password:c-t6")).toBeUndefined();
 });

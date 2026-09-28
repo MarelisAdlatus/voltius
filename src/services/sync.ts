@@ -814,6 +814,11 @@ async function offboardFromTeam(tid: string, teamName: string): Promise<void> {
   const step = <T,>(what: string, fn: () => Promise<T> | T) =>
     guarded(`offboarding ${tid}: ${what}`, fn);
 
+  await step("drop the cached team secrets", async () => {
+    const { teamSecretCache } = await import("@/services/teamSecretCache");
+    teamSecretCache.clearTeam(tid);
+  });
+
   // membership_changed carries no reason, so a departure this client caused
   // itself is only recognisable from the marker it left behind.
   const departure = await step("read the departure marker", async () => {
@@ -833,6 +838,13 @@ async function offboardFromTeam(tid: string, teamName: string): Promise<void> {
   await step("evict the vault key", async () => {
     const { deleteTeamKey } = await import("@/services/teamVaultSync");
     deleteTeamKey(tid);
+  });
+
+  // Their local copies are the team's too, so the wipe below must not skip them.
+  await step("drop the team's pending uploads", async () => {
+    const { usePendingTeamSecretUploadStore } = await import("@/stores/pendingTeamSecretUploadStore");
+    const uploads = usePendingTeamSecretUploadStore.getState();
+    uploads.resolve(tid, uploads.keysByTeamId[tid] ?? []);
   });
 
   // Wipe before anything else: the wipe names its keychain entries from the
@@ -899,12 +911,13 @@ export async function handleRealtimeEvent(eventData: string, myDeviceId: string)
       useTeamStore.getState().loadMembers(teamId),
       useTeamStore.getState().loadRoles(teamId),
     ]);
+    const { fetchTeamData, reconcileTeamVaultKeys } = await import("@/services/teamVaultSync");
+    fetchTeamData(teamId, { background: true }).catch(logFailure(`team_members: fetchTeamData team=${teamId}`));
     // Distribute the vault key to any member who lacks one. Reconciliation
     // against the server's key-holder list (rather than a local membership
     // diff) also covers the adder-is-only-key-holder case, where the new
     // member is already in membersByTeam by the time this event fires so the
     // old diff saw zero newcomers and skipped distribution (issue #41).
-    const { reconcileTeamVaultKeys } = await import("@/services/teamVaultSync");
     await reconcileTeamVaultKeys(teamId).catch(logFailure(`team_members: reconcileTeamVaultKeys team=${teamId}`));
     // Opportunistic rotate-and-drain (#217): reconcileTeamVaultKeys only ever
     // adds keys for new members: it does nothing on a removal, because the

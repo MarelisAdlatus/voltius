@@ -1,17 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Connection, SshKey } from "@/types";
 import { connectionsClipboardHalf, type ConnectionsClipboardDeps } from "./connections";
+import { moveKeyToVault, moveWithSecrets } from "@/services/vaultObjectSecrets";
 
 vi.mock("@/services/vault", () => ({
   getSecret: vi.fn(async () => "material"),
   storeSecret: vi.fn(async () => {}),
 }));
-vi.mock("@/services/vaultSecrets", () => ({
-  publishKeySecrets: vi.fn(async () => {}),
-  unpublishKeySecrets: vi.fn(async () => {}),
-  publishIdentitySecrets: vi.fn(async () => {}),
-  unpublishIdentitySecrets: vi.fn(async () => {}),
-  transferConnectionSecrets: vi.fn(async () => {}),
+vi.mock("@/services/vaultObjectSecrets", () => ({
+  moveKeyToVault: vi.fn(async () => {}),
+  moveIdentityToVault: vi.fn(async () => {}),
+  moveWithSecrets: vi.fn(async (_k: string, _o: unknown, _t: string, update: () => Promise<unknown>) => {
+    await update();
+  }),
 }));
 
 const conn = (over: Partial<Connection> = {}): Connection => ({
@@ -37,11 +38,12 @@ const deps = (over: Partial<ConnectionsClipboardDeps> = {}): ConnectionsClipboar
   saveKey: vi.fn(async () => ({ id: "k-copy" })),
   updateIdentity: vi.fn(async () => {}),
   saveIdentity: vi.fn(async () => ({ id: "i-copy" })),
-  withdrawOrWarn: vi.fn(async (p: Promise<unknown>) => p),
   ...over,
 });
 
 describe("connectionsClipboardHalf", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
   it("plans a move of a key no host left behind is using", () => {
     const half = connectionsClipboardHalf(deps());
     const plan = half.planCascade!([{ id: "c1", kind: "connection" }], [], "team-1", "cut");
@@ -113,5 +115,20 @@ describe("connectionsClipboardHalf", () => {
   it("reports a key left outside the destination as dangling", () => {
     const half = connectionsClipboardHalf(deps());
     expect(half.danglingKinds!([{ id: "c1", kind: "connection" }], [], "team-1")).toEqual(["key"]);
+  });
+
+  it("transfers a moved key's material into the destination through the routed seam", async () => {
+    const d = deps();
+    const items = [{ id: "c1", kind: "connection" as const }];
+    await connectionsClipboardHalf(d).applyCascade!(items, [], "team-1", "cut");
+    expect(moveKeyToVault).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "k1" }), "team-1", expect.objectContaining({ vault_id: "team-1" }), d.updateKey,
+    );
+  });
+
+  it("transfers a moved connection's material on a cross-vault move", async () => {
+    const d = deps();
+    await connectionsClipboardHalf(d).moveItems(["c1"], "f2", "team-1");
+    expect(moveWithSecrets).toHaveBeenCalledWith("connection", expect.objectContaining({ id: "c1", vault_id: "personal" }), "team-1", expect.any(Function));
   });
 });
