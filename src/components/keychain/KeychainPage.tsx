@@ -51,7 +51,7 @@ import { ClipboardPill } from "@/components/shared/ClipboardPill";
 import { useVaultClipboardStore } from "@/stores/vaultClipboardStore";
 import { getShortcutHint } from "@/stores/shortcutStore";
 import { clipboardMenuItems } from "@/utils/clipboardMenuItems";
-import { descendantFolders, itemsInFolderSubtree } from "@/utils/folderTree";
+import { descendantFolders, foldersOutsideSubtree, itemsInFolderSubtree } from "@/utils/folderTree";
 import { folderDeleteMessages } from "@/utils/folderDeleteMessages";
 import { useVaultOptions } from "@/hooks/useVaultOptions";
 import { useScopedFolders } from "@/hooks/useScopedFolders";
@@ -59,7 +59,9 @@ import { FolderBreadcrumb } from "@/components/folders/FolderBreadcrumb";
 import { FolderEjectZone } from "@/components/folders/FolderEjectZone";
 import { cloneFolderTree, copyFolderSubtree } from "@/utils/folderCopy";
 import { moveFolderTreeToVault } from "@/utils/folderMove";
+import { copyingRulesOf } from "@/services/ruleSetIntent";
 import { useSearchMatcher } from "@/utils/search";
+import { unlessMoveCancelled } from "@/services/teamObjectPersistence";
 
 export default function KeychainPage() {
   const { t } = useTranslation();
@@ -93,6 +95,7 @@ export default function KeychainPage() {
   const identityFormVersion = useSyncedFormKey(editingIdentity?.updated_at, showIdentityForm, () => identityFormIsDirtyRef.current);
   const [exportingKey, setExportingKey] = useState<SshKey | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const reportError = unlessMoveCancelled(setError);
   const layoutMode = useUIStore((s) => s.keychainLayoutMode);
   const setLayoutMode = useUIStore((s) => s.setKeychainLayoutMode);
   const sortMode = useUIStore((s) => s.keychainSortMode);
@@ -290,7 +293,7 @@ export default function KeychainPage() {
         operation,
         targetVaultId: v.id,
         selected: { keyIds: selectedKeyIds, identityIds: selectedIdentityIds, folderIds: selectedFolderIds },
-        can: (permission, vaultId) => can(permission, vaultId),
+        can,
         connections: [],
         identities,
         keys,
@@ -460,7 +463,7 @@ export default function KeychainPage() {
       const key = await saveKeyFromForm(editingKey, data, privateKey, publicKey, passphrase, selectedVaultIds[0] ?? "personal");
       if (!editingKey) setEditingKeyId(key.id);
     } catch (err) {
-      setError(String(err));
+      reportError(err);
     }
   };
 
@@ -475,7 +478,7 @@ export default function KeychainPage() {
       );
       if (!editingIdentity) setEditingIdentityId(identity.id);
     } catch (err) {
-      setError(String(err));
+      reportError(err);
     }
   };
 
@@ -546,12 +549,12 @@ export default function KeychainPage() {
     try {
       await moveKeyToVault(key, vaultId, { name: key.name, key_type: key.key_type, tags: key.tags, folder_id: key.folder_id, vault_id: vaultId }, updateKey);
     }
-    catch (err) { setError(String(err)); }
+    catch (err) { reportError(err); }
   };
 
   const handleCopyKeyToVault = async (key: SshKey, vaultId: string) => {
     try {
-      const newKey = await saveKey({ name: key.name, key_type: key.key_type, tags: key.tags, vault_id: vaultId });
+      const newKey = await saveKey(copyingRulesOf({ name: key.name, key_type: key.key_type, tags: key.tags, vault_id: vaultId }, key.id));
       const [priv, pub, pass] = await Promise.all([
         getSecret(`key:${key.id}:private`),
         getSecret(`key:${key.id}:public`),
@@ -582,7 +585,7 @@ export default function KeychainPage() {
             name: identity.name, username: identity.username,
             key_id: identity.key_id, tags: identity.tags, folder_id: identity.folder_id, vault_id: vaultId,
           }, updateIdentity);
-        } catch (err) { setError(String(err)); }
+        } catch (err) { reportError(err); }
       },
     });
   };
@@ -602,7 +605,7 @@ export default function KeychainPage() {
           let newKeyId = identity.key_id;
 
           if (keyNeedsCopy) {
-            const newKey = await saveKey({ name: key.name, key_type: key.key_type, tags: key.tags, vault_id: vaultId });
+            const newKey = await saveKey(copyingRulesOf({ name: key.name, key_type: key.key_type, tags: key.tags, vault_id: vaultId }, key.id));
             const [priv, pub] = await Promise.all([
               getSecret(`key:${key.id}:private`),
               getSecret(`key:${key.id}:public`),
@@ -612,7 +615,7 @@ export default function KeychainPage() {
             newKeyId = newKey.id;
           }
 
-          const newIdentity = await saveIdentity({ name: identity.name, username: identity.username, key_id: newKeyId, tags: identity.tags, vault_id: vaultId });
+          const newIdentity = await saveIdentity(copyingRulesOf({ name: identity.name, username: identity.username, key_id: newKeyId, tags: identity.tags, vault_id: vaultId }, identity.id));
           const pwd = await getSecret(`identity:${identity.id}:password`);
           if (pwd) await storeSecret(`identity:${newIdentity.id}:password`, pwd).catch(keepCachedOnUploadFailure("KeychainPage: copy identity to vault"));
         } catch (err) { setError(String(err)); }
@@ -665,7 +668,7 @@ export default function KeychainPage() {
       execute: async () => {
         try {
           await migrateFolderTreeToVault(folder, folder.parent_folder_id ?? null, vaultId);
-        } catch (err) { setError(String(err)); }
+        } catch (err) { reportError(err); }
       },
     });
   };
@@ -694,7 +697,7 @@ export default function KeychainPage() {
           });
           const keyIdMap = new Map<string, string>();
           for (const key of treeKeys) {
-            const newKey = await useKeyStore.getState().saveKey({ name: key.name, key_type: key.key_type, tags: key.tags, vault_id: vaultId });
+            const newKey = await useKeyStore.getState().saveKey(copyingRulesOf({ name: key.name, key_type: key.key_type, tags: key.tags, vault_id: vaultId }, key.id));
             const [priv, pub] = await Promise.all([
               getSecret(`key:${key.id}:private`),
               getSecret(`key:${key.id}:public`),
@@ -705,7 +708,7 @@ export default function KeychainPage() {
           }
           for (const identity of treeIdentities) {
             const newKeyId = identity.key_id ? (keyIdMap.get(identity.key_id) ?? identity.key_id) : undefined;
-            const newIdentity = await useIdentityStore.getState().saveIdentity({ name: identity.name, username: identity.username, key_id: newKeyId, tags: identity.tags, vault_id: vaultId });
+            const newIdentity = await useIdentityStore.getState().saveIdentity(copyingRulesOf({ name: identity.name, username: identity.username, key_id: newKeyId, tags: identity.tags, vault_id: vaultId }, identity.id));
             const pwd = await getSecret(`identity:${identity.id}:password`);
             if (pwd) await storeSecret(`identity:${newIdentity.id}:password`, pwd).catch(keepCachedOnUploadFailure("KeychainPage: copy folder identity"));
           }
@@ -727,14 +730,14 @@ export default function KeychainPage() {
     opts: { vaultId?: string; keepName?: boolean } = {},
   ) {
     const vaultId = opts.vaultId ?? key.vault_id ?? "personal";
-    const newKey = await saveKey({
+    const newKey = await saveKey(copyingRulesOf({
       // default name kept in English until all creation sites are localized together (see i18n issue #14)
       name: key.name ? (opts.keepName ? key.name : `${key.name} (copy)`) : undefined,
       key_type: key.key_type,
       tags: [...key.tags],
       folder_id: folderId ?? undefined,
       vault_id: vaultId,
-    });
+    }, key.id));
     // Same copy as plugins/domains/objects.ts duplicators.key; kept apart: component vs plugin ports.
     for (const part of ["private", "public", "passphrase"]) {
       const value = await getSecret(`key:${key.id}:${part}`);
@@ -752,7 +755,7 @@ export default function KeychainPage() {
     opts: { vaultId?: string; keepName?: boolean; keyId?: string } = {},
   ) {
     const vaultId = opts.vaultId ?? identity.vault_id ?? "personal";
-    const newIdentity = await saveIdentity({
+    const newIdentity = await saveIdentity(copyingRulesOf({
       // default name kept in English until all creation sites are localized together (see i18n issue #14)
       name: identity.name ? (opts.keepName ? identity.name : `${identity.name} (copy)`) : undefined,
       username: identity.username,
@@ -760,7 +763,7 @@ export default function KeychainPage() {
       tags: [...identity.tags],
       folder_id: folderId ?? undefined,
       vault_id: vaultId,
-    });
+    }, identity.id));
     const pwd = await getSecret(`identity:${identity.id}:password`);
     if (pwd) {
       const localKey = `identity:${newIdentity.id}:password`;
@@ -846,18 +849,21 @@ export default function KeychainPage() {
     <>
     <SidePanelLayout
       panelOpen={showPanel || editingFolder !== null}
-      panelWidth={editingFolder !== null && !showPanel ? 280 : 340}
+      panelWidth={editingFolder !== null && !showPanel ? 320 : 340}
       panel={
         <>
           {editingFolder !== null && !showPanel && (
             <FolderEditPanel
               folder={editingFolder}
-              onUpdate={(id, data) => void updateFolder(id, data)}
+              onUpdate={updateFolder}
               onDelete={(f) => setConfirmDeleteFolderId(f.id)}
               onExport={() => useUIStore.getState().openImportExport("export", { bulk: { keys: keys.filter((k) => k.folder_id === editingFolder.id).map((k) => k.id), identities: identities.filter((i) => i.folder_id === editingFolder.id).map((i) => i.id) } })}
               onClose={() => setEditingFolderId(null)}
+              onOpen={() => { navigateInto(editingFolder); setEditingFolderId(null); }}
+              onSelectSelf={() => selectSingle(editingFolder.id)}
+              parentOptions={foldersOutsideSubtree(scopedFolders, editingFolder.id)}
               vaults={vaultOptions.filter((v) => v.id !== (editingFolder.vault_id ?? "personal"))}
-              canEdit={can("EDIT_KEYS", editingFolder.vault_id ?? "personal")}
+              canEdit={can("EDIT_FOLDERS", editingFolder.vault_id ?? "personal", editingFolder.id)}
               onMoveToVault={(vaultId) => handleMoveFolderToVault(editingFolder, vaultId)}
               onCopyToVault={(vaultId) => handleCopyFolderToVault(editingFolder, vaultId)}
             />
@@ -880,7 +886,7 @@ export default function KeychainPage() {
               flushRef={keyFormFlushRef}
               isDirtyRef={keyFormIsDirtyRef}
               vaults={editingKey ? vaultOptions.filter((v) => v.id !== (editingKey.vault_id ?? "personal")) : []}
-              canEdit={editingKey ? can("EDIT_KEYS", editingKey.vault_id ?? "personal") : false}
+              canEdit={editingKey ? can("EDIT_KEYS", editingKey.vault_id ?? "personal", editingKey.id) : false}
               onMoveToVault={editingKey ? (vaultId) => { void handleMoveKeyToVault(editingKey, vaultId); } : undefined}
               onCopyToVault={editingKey ? (vaultId) => { void handleCopyKeyToVault(editingKey, vaultId); } : undefined}
             />
@@ -895,7 +901,7 @@ export default function KeychainPage() {
               flushRef={identityFormFlushRef}
               isDirtyRef={identityFormIsDirtyRef}
               vaults={editingIdentity ? vaultOptions.filter((v) => v.id !== (editingIdentity.vault_id ?? "personal")) : []}
-              canEdit={editingIdentity ? can("EDIT_IDENTITIES", editingIdentity.vault_id ?? "personal") : false}
+              canEdit={editingIdentity ? can("EDIT_IDENTITIES", editingIdentity.vault_id ?? "personal", editingIdentity.id) : false}
               onMoveToVault={editingIdentity ? (vaultId) => { void handleMoveIdentityToVault(editingIdentity, vaultId); } : undefined}
               onCopyToVault={editingIdentity ? (vaultId) => { void handleCopyIdentityToVault(editingIdentity, vaultId); } : undefined}
             />
@@ -995,7 +1001,7 @@ export default function KeychainPage() {
                       onPointerDown={(e) => handleFolderDragStart(e, folder.id)}
                       {...folderDropProps(folder.id)}
                       vaults={vaultOptions.filter((v) => v.id !== (folder.vault_id ?? "personal"))}
-                      canEdit={can("EDIT_KEYS", folder.vault_id ?? "personal")}
+                      canEdit={can("EDIT_FOLDERS", folder.vault_id ?? "personal", folder.id)}
                       onMoveToVault={(vaultId) => handleMoveFolderToVault(folder, vaultId)}
                       onCopyToVault={(vaultId) => handleCopyFolderToVault(folder, vaultId)}
                       bulkContextMenuItems={selectedIdSet.size > 1 ? bulkContextMenuItems : undefined}

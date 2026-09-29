@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, test, expect } from "vitest";
 import type { Folder } from "@/types";
-import { folderOptionsFor, folderSubtreeIds, itemsInFolderSubtree } from "./folderTree";
+import { folderOptionsFor, folderSubtreeIds, foldersOutsideSubtree, itemsInFolderSubtree, rootedParentId } from "./folderTree";
 
 function folder(id: string, parent?: string): Folder {
   return {
@@ -30,6 +30,13 @@ describe("folderSubtreeIds", () => {
   });
 });
 
+describe("foldersOutsideSubtree", () => {
+  it("drops the root and its descendants, keeps everything else", () => {
+    const folders = [folder("root"), folder("child", "root"), folder("sibling"), folder("nested", "sibling")];
+    expect(foldersOutsideSubtree(folders, "root").map((f) => f.id)).toEqual(["sibling", "nested"]);
+  });
+});
+
 describe("itemsInFolderSubtree", () => {
   it("picks up items filed in subfolders, not unfoldered or unrelated ones", () => {
     const folders = [folder("root"), folder("child", "root"), folder("other")];
@@ -53,4 +60,11 @@ describe("folderOptionsFor", () => {
     expect(folderOptionsFor(folders, "keychain").map((f) => f.id)).toEqual(["creds"]);
     expect(folderOptionsFor(folders, "connection").map((f) => f.id)).toEqual(["hosts"]);
   });
+});
+
+test("a parent that is not visible counts as the root", () => {
+  const known = new Set(["f1"]);
+  expect(rootedParentId("f1", known)).toBe("f1");
+  expect(rootedParentId("hidden", known)).toBeNull();
+  expect(rootedParentId(undefined, known)).toBeNull();
 });

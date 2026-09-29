@@ -1,22 +1,8 @@
-import { getVersion } from "@tauri-apps/api/app";
 import i18n from "@/i18n";
 import { appFetch } from "@/services/http";
 import { getJwt, getServerUrl, isJwtExpiredOrExpiring, tryRefreshJwt } from "@/services/authTokens";
-
-// Cached: the app version cannot change while the process runs. Caching the
-// in-flight *promise* (not just the resolved value) means concurrent callers
-// share one getVersion() call instead of each firing their own. A rejection
-// clears the cache so the next call retries rather than inheriting a
-// poisoned value forever — see src/stores/marketplaceStore.ts for the sibling
-// pattern this follows.
-let versionPromise: Promise<string | null> | null = null;
-function clientVersion(): Promise<string | null> {
-  versionPromise ??= getVersion().catch(() => {
-    versionPromise = null; // retry next call rather than caching the failure
-    return null;
-  });
-  return versionPromise;
-}
+import { clientHeaders } from "@/services/clientHeaders";
+import type { RuleEntry } from "@/services/permissions";
 
 export type TeamObjectType =
   | "connection"
@@ -36,6 +22,8 @@ export interface TeamObjectRecord<T = unknown> {
   updated_at: string;
   updated_by: string;
   deleted_at?: string | null;
+  rule_set_id?: string | null;
+  my_permissions?: number;
 }
 
 export interface TeamSecretRecord {
@@ -53,6 +41,7 @@ export interface UpsertTeamObject<T = unknown> {
   name?: string | null;
   folder_id?: string | null;
   metadata: T;
+  rule_set_id?: string | null;
 }
 
 export interface UpsertTeamSecret {
@@ -97,16 +86,11 @@ async function fetchTeamApi(path: string, init: RequestInit): Promise<Response> 
   if (!jwt || isJwtExpiredOrExpiring(jwt)) jwt = await tryRefreshJwt();
   if (!jwt) throw new Error(i18n.t("common.error.sessionExpired"));
 
-  const version = await clientVersion();
+  const capability = await clientHeaders();
   const makeHeaders = (token: string) => ({
+    ...capability,
     ...(init.headers as Record<string, string>),
     Authorization: `Bearer ${token}`,
-    // Lets a server opt into refusing writes from builds that predate the
-    // encrypted metadata format (#229). Compatibility only — spoofable, and
-    // never used for authorization. Omitted (rather than a fabricated
-    // sentinel) when the version can't be resolved: an absent header reads
-    // honestly as "unknown", unlike a lied-about "0.0.0".
-    ...(version !== null ? { "X-Client-Version": version } : {}),
   });
 
   let res = await appFetch(`${serverUrl}${path}`, { ...init, headers: makeHeaders(jwt) });
@@ -143,6 +127,35 @@ export async function upsertTeamObject(teamId: string, object: UpsertTeamObject)
 export async function deleteTeamObject(teamId: string, objectId: string): Promise<void> {
   const res = await fetchTeamApi(`/v1/teams/${teamId}/objects/${objectId}`, { method: "DELETE" });
   await ensureOk(res, "common.error.failedToDeleteTeamObject");
+}
+
+async function ruleSetRequest(teamId: string, path: string, init: RequestInit, messageKey: string): Promise<Response> {
+  const res = await fetchTeamApi(`/v1/teams/${teamId}/rule-sets${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json" },
+  });
+  if (res.status === 413) throw apiError(i18n.t("common.error.tooManyRuleEntries"), { status: 413 });
+  await ensureOk(res, messageKey);
+  return res;
+}
+
+export async function createRuleSet(teamId: string, entries: RuleEntry[]): Promise<string> {
+  const res = await ruleSetRequest(teamId, "", { method: "POST", body: JSON.stringify({ entries }) }, "common.error.failedToSaveRuleSet");
+  return ((await res.json()) as { id: string }).id;
+}
+
+export async function copyRuleSet(teamId: string, setId: string): Promise<string> {
+  const res = await ruleSetRequest(teamId, `/${setId}/copy`, { method: "POST" }, "common.error.failedToSaveRuleSet");
+  return ((await res.json()) as { id: string }).id;
+}
+
+export async function getRuleSet(teamId: string, setId: string): Promise<RuleEntry[]> {
+  const res = await ruleSetRequest(teamId, `/${setId}`, { method: "GET" }, "common.error.failedToLoadRuleSet");
+  return ((await res.json()) as { entries: RuleEntry[] }).entries;
+}
+
+export async function putRuleSet(teamId: string, setId: string, entries: RuleEntry[]): Promise<void> {
+  await ruleSetRequest(teamId, `/${setId}`, { method: "PUT", body: JSON.stringify({ entries }) }, "common.error.failedToSaveRuleSet");
 }
 
 /**

@@ -55,3 +55,12 @@ export function itemsInFolderSubtree<T extends { folder_id?: string | null }>(
   const ids = folderSubtreeIds(folders, rootId);
   return items.filter((i) => i.folder_id != null && ids.has(i.folder_id));
 }
+
+export function foldersOutsideSubtree(folders: Folder[], rootId: string): Folder[] {
+  const ids = folderSubtreeIds(folders, rootId);
+  return folders.filter((f) => !ids.has(f.id));
+}
+
+export function rootedParentId(parentId: string | null | undefined, knownIds: ReadonlySet<string>): string | null {
+  return parentId && knownIds.has(parentId) ? parentId : null;
+}

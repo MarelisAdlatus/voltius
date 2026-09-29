@@ -197,6 +197,7 @@ async function _fetchAndUnwrapVaultKeyUrl(
 
   if (res.status === 403) throw "forbidden";
   if (res.status === 402) throw "payment_required";
+  if (res.status === 426) throw "update_required";
   if (res.status === 404) throw "awaiting_key";
   if (!res.ok) throw "error";
 
@@ -500,13 +501,6 @@ async function _fetchTeamData(teamId: string, options: TeamVaultRefreshOptions):
   try {
     key = await getTeamVaultKey(teamId);
   } catch (err) {
-    if (options.background) {
-      if (isAccessRevoked(err)) teamSecretCache.clearTeam(teamId);
-      return;
-    }
-    const validStatuses = ["offline", "forbidden", "payment_required", "awaiting_key", "key_mismatch", "error"] as const;
-    type Thrown = typeof validStatuses[number];
-    let status: Thrown | "loaded" = validStatuses.includes(err as Thrown) ? (err as Thrown) : "error";
     // A 403 here means one of two very different things: the caller was removed
     // from the team, or their role simply lacks VIEW_SECRETS (connect-only,
     // issue #187). The route cannot tell them apart, but the client can — a
@@ -514,9 +508,14 @@ async function _fetchTeamData(teamId: string, options: TeamVaultRefreshOptions):
     // the team is still listed is a role restriction, and such a member reads
     // this vault through the object routes only: the empty list they just got
     // IS their view of the vault, so show it rather than a false revocation.
-    if (status === "forbidden" && (await _isStillATeamMember(teamId))) {
-      status = "loaded";
+    const emptyView = err === "forbidden" && (await _isStillATeamMember(teamId));
+    if (options.background && !emptyView) {
+      if (isAccessRevoked(err)) teamSecretCache.clearTeam(teamId);
+      return;
     }
+    const validStatuses = ["offline", "forbidden", "payment_required", "update_required", "awaiting_key", "key_mismatch", "error"] as const;
+    type Thrown = typeof validStatuses[number];
+    const status: Thrown | "loaded" = emptyView ? "loaded" : validStatuses.includes(err as Thrown) ? (err as Thrown) : "error";
     // Clear team store slices so stale data doesn't linger
     await clearTeamStoresAndSecrets(teamId);
     stateStore.setStatus(teamId, status);
@@ -526,9 +525,8 @@ async function _fetchTeamData(teamId: string, options: TeamVaultRefreshOptions):
   let blobPayload: BlobPayload;
   try {
     const res = await fetchWithAuth(`${serverUrl}/v1/teams/${teamId}/sync-blob`, { method: "GET" });
-    if (res.status === 404) {
-      // No blob yet — owner hasn't pushed data. Show as empty vault.
-      if (options.background) return;
+    // After a successful object list, no readable blob means the empty list is the member's view.
+    if (res.status === 404 || (res.status === 403 && !objectListFailed)) {
       await clearTeamStoresAndSecrets(teamId);
       stateStore.setStatus(teamId, objectListFailed ? "error" : "loaded");
       return;
@@ -650,6 +648,14 @@ export async function _hydrateTeamObjectStores(teamId: string, objects: TeamObje
   );
 
   const usable = decoded.filter((o): o is TeamObjectRecord & { metadata: object } => o !== null);
+
+  const { buildAccessEntries } = await import("@/services/teamObjectAccess");
+  const { useTeamObjectAccessStore } = await import("@/stores/teamObjectAccessStore");
+  const access = buildAccessEntries(objects, new Map(usable.map((o) => [o.object_id, o.metadata])));
+  if (access.supported === false) useTeamObjectAccessStore.getState().clearTeam(teamId);
+  else useTeamObjectAccessStore.getState().replaceTeam(
+    teamId, access.entries, access.supported ?? useTeamObjectAccessStore.getState().supportedByTeam[teamId] ?? false,
+  );
 
   const byType = <T>(type: TeamObjectRecord["object_type"]): T[] =>
     usable
@@ -777,6 +783,8 @@ export async function clearTeamStoresAndSecrets(teamId: string): Promise<string[
   // Purge before clearing the stores: the key names come from the objects still in them.
   const failedKeys = await purgeTeamObjectSecrets(teamId, pendingUploads);
   teamSecretCache.clearTeam(teamId);
+  const { useTeamObjectAccessStore } = await import("@/stores/teamObjectAccessStore");
+  useTeamObjectAccessStore.getState().clearTeam(teamId);
 
   useConnectionStore.getState().setTeamConnections(teamId, []);
   useIdentityStore.getState().setTeamIdentities(teamId, []);

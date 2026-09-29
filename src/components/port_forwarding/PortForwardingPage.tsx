@@ -43,7 +43,7 @@ import { RuleCard } from "./RuleCard";
 import { RuleForm } from "./RuleForm";
 import type { Folder, PortForwardingRule, PortForwardingRuleFormData } from "@/types";
 import type { LayoutMode, SortMode } from "@/components/shared/ToolbarViewControls";
-import { descendantFolders, itemsInFolderSubtree } from "@/utils/folderTree";
+import { descendantFolders, foldersOutsideSubtree, itemsInFolderSubtree } from "@/utils/folderTree";
 import { folderDeleteMessages } from "@/utils/folderDeleteMessages";
 import { useVaultOptions } from "@/hooks/useVaultOptions";
 import { useScopedFolders } from "@/hooks/useScopedFolders";
@@ -51,6 +51,7 @@ import { FolderBreadcrumb } from "@/components/folders/FolderBreadcrumb";
 import { FolderEjectZone } from "@/components/folders/FolderEjectZone";
 import { cloneFolderTree, copyFolderSubtree } from "@/utils/folderCopy";
 import { moveFolderTreeToVault } from "@/utils/folderMove";
+import { copyingRulesOf } from "@/services/ruleSetIntent";
 import { compareStrings } from "@/utils/localeFormat";
 import { useSearchMatcher } from "@/utils/search";
 
@@ -213,10 +214,10 @@ export function PortForwardingPage() {
 
   const handleCopyRuleToVault = (rule: PortForwardingRule, vaultId: string) => {
     const destHasName = rules.some((r) => (r.vault_id ?? "personal") === vaultId && r.name === rule.name);
-    void createRule(ruleToForm(rule, {
+    void createRule(copyingRulesOf(ruleToForm(rule, {
       name: destHasName ? `${rule.name} (copy)` : rule.name,
       vault_id: vaultId,
-    }));
+    }), rule.id));
   };
 
   // ── Vault move / copy for folders ─────────────────────────────────────────
@@ -271,7 +272,7 @@ export function PortForwardingPage() {
         for (const r of treeRules) {
           const newFolderId = r.folder_id ? (folderIdMap.get(r.folder_id) ?? newRootId) : newRootId;
           const destHasRule = rules.some((x) => (x.vault_id ?? "personal") === vaultId && x.name === r.name);
-          await createRule({ name: destHasRule ? `${r.name} (copy)` : r.name, local_port: r.local_port, remote_port: r.remote_port, remote_host: r.remote_host, tunnel_type: r.tunnel_type ?? "local", bind_host: r.bind_host ?? "127.0.0.1", target_host: r.target_host ?? "127.0.0.1", description: r.description, connection_ids: r.connection_ids, folder_id: newFolderId, vault_id: vaultId });
+          await createRule(copyingRulesOf({ name: destHasRule ? `${r.name} (copy)` : r.name, local_port: r.local_port, remote_port: r.remote_port, remote_host: r.remote_host, tunnel_type: r.tunnel_type ?? "local", bind_host: r.bind_host ?? "127.0.0.1", target_host: r.target_host ?? "127.0.0.1", description: r.description, connection_ids: r.connection_ids, folder_id: newFolderId, vault_id: vaultId }, r.id));
         }
       },
     });
@@ -288,12 +289,12 @@ export function PortForwardingPage() {
     rule: PortForwardingRule,
     folderId: string | null,
     opts: { vaultId?: string; keepName?: boolean } = {},
-  ) => createRule(ruleToForm(rule, {
+  ) => createRule(copyingRulesOf(ruleToForm(rule, {
     // default name suffix kept in English until all creation sites are localized together (see i18n issue #14)
     name: opts.keepName ? rule.name : `${rule.name} (copy)`,
     folder_id: folderId ?? undefined,
     vault_id: opts.vaultId ?? rule.vault_id,
-  }));
+  }), rule.id));
 
   /** Deep-clones a folder subtree under `parentFolderId`, into `vaultId` when given. */
   const copyFolderInto = async (
@@ -434,7 +435,7 @@ export function PortForwardingPage() {
   // ── Drag-to-folder ────────────────────────────────────────────────────────
 
   const visibleFolderIds = useMemo(() => new Set(visibleFolders.map((f) => f.id)), [visibleFolders]);
-  const canEdit = (vaultId: string) => can("EDIT_CONNECTIONS", vaultId);
+  const canEdit = (vaultId: string, objectId?: string) => can("EDIT_CONNECTIONS", vaultId, objectId);
 
   const {
     isDragging,
@@ -482,7 +483,7 @@ export function PortForwardingPage() {
     const n = selectedRules.length;
     // Folders count too: a folder-only selection still needs cut/copy.
     if (n + selectedFolders.length < 2) return undefined;
-    const allCanEdit = selectedRules.every((r) => canEdit(r.vault_id ?? "personal"));
+    const allCanEdit = selectedRules.every((r) => canEdit(r.vault_id ?? "personal", r.id));
     const sharedVaults = vaultOptions.filter((v) =>
       selectedRules.some((r) => (r.vault_id ?? "personal") !== v.id),
     );
@@ -519,17 +520,20 @@ export function PortForwardingPage() {
     <>
     <SidePanelLayout
       panelOpen={showForm || editingFolder !== null}
-      panelWidth={editingFolder !== null && !showForm ? 280 : 340}
+      panelWidth={editingFolder !== null && !showForm ? 320 : 340}
       panel={
         <>
           {editingFolder !== null && !showForm && (
             <FolderEditPanel
               folder={editingFolder}
-              onUpdate={(id, data) => void updateFolder(id, data)}
+              onUpdate={updateFolder}
               onDelete={(f) => setConfirmDeleteFolderId(f.id)}
               onClose={() => setEditingFolderId(null)}
+              onOpen={() => { navigateInto(editingFolder); setEditingFolderId(null); }}
+              onSelectSelf={() => selectSingle(editingFolder.id)}
+              parentOptions={foldersOutsideSubtree(scopedFolders, editingFolder.id)}
               vaults={vaultOptions.filter((v) => v.id !== (editingFolder.vault_id ?? "personal"))}
-              canEdit={canEdit(editingFolder.vault_id ?? "personal")}
+              canEdit={can("EDIT_FOLDERS", editingFolder.vault_id ?? "personal", editingFolder.id)}
               onMoveToVault={(vaultId) => handleMoveFolderToVault(editingFolder, vaultId)}
               onCopyToVault={(vaultId) => handleCopyFolderToVault(editingFolder, vaultId)}
               onExport={() => useUIStore.getState().openImportExport("export", { bulk: { portForwardingRules: rules.filter((r) => r.folder_id === editingFolder.id).map((r) => r.id) } })}
@@ -609,7 +613,7 @@ export function PortForwardingPage() {
                   style={layoutMode === "grid" ? { gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" } : undefined}
                 >
                   {visibleFolders.map((folder) => {
-                    const folderCanEdit = canEdit(folder.vault_id ?? "personal");
+                    const folderCanEdit = can("EDIT_FOLDERS", folder.vault_id ?? "personal", folder.id);
                     return (
                       <FolderCard
                         key={folder.id}
@@ -701,7 +705,7 @@ export function PortForwardingPage() {
                         statusLabel={statusLabel}
                         isBusy={isBusy}
                         webUrl={webUrl}
-                        canEdit={canEdit(rule.vault_id)}
+                        canEdit={canEdit(rule.vault_id, rule.id)}
                         vaults={vaultOptions.filter((v) => v.id !== (rule.vault_id ?? "personal"))}
                         onSelect={(id, e) => handleItemSelect(id, e)}
                         onEdit={openEdit}
