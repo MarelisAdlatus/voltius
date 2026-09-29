@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-09-29
+
+### Added
+
+- Per-object permissions for team vaults: allow, inherit or deny access on each host, key, identity, snippet and folder, with new View and Administrator permissions (#405)
+- HTTPS proxies for SSH, SFTP and reachability checks, in Settings → Hosts and the host form (#397)
+- Translated the first-party plugin panels into all five languages; the plugin i18n API gains plural forms and relative time (#370)
+
+### Changed
+
+- Team vault secrets now stay in memory only. Local copies of team passwords are removed on upgrade, since team vaults are online only (#402)
+- `HTTPS_PROXY`/`ALL_PROXY` and Windows proxy values with an `https://` scheme are now used as HTTPS proxies instead of being ignored. A plain proxy set as `https://` now fails the TLS handshake instead of connecting directly (#397)
+- FTPS on Android now also trusts the bundled webpki root certificates (#397)
+- Once a team sets its first per-object rule, members on 0.43.0 or older must update before they can open that team's vault (#405)
+
+### Fixed
+
+- Closed localization gaps in the host UI: plural forms, date, number and sort order follow the app language, and search handles the Turkish İ (#385)
+- Passed IPv6 destinations to SOCKS5 forwarding correctly (#384)
+- Showed the real host-key error behind a jump host and stopped auto-reconnect on it (#384)
+- Fixed local copy for links, overwrites and copying a folder into itself (#384)
+
 ## [0.43.0] - 2026-09-27
 
 ### Added
