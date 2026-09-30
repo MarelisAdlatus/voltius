@@ -983,15 +983,6 @@
       "changelogPopup": {
         "label": "Показывать список изменений после обновления"
       },
-      "category": {
-        "appearance": "Оформление",
-        "portForwarding": "Проброс портов",
-        "sftp": "SFTP",
-        "hosts": "Хосты",
-        "updates": "Обновления",
-        "plugins": "Плагины",
-        "integrations": "Интеграции"
-      },
       "pluginInstallReview": {
         "label": "Проверять разрешения перед установкой плагинов"
       },

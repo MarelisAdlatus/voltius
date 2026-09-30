@@ -841,15 +841,6 @@
       "changelogPopup": {
         "label": "Güncellemelerden Sonra Yenilikleri Göster"
       },
-      "category": {
-        "appearance": "Görünüm",
-        "portForwarding": "Port Yönlendirme",
-        "sftp": "SFTP",
-        "hosts": "Sunucular",
-        "updates": "Güncellemeler",
-        "plugins": "Eklentiler",
-        "integrations": "Entegrasyonlar"
-      },
       "pluginInstallReview": {
         "label": "Eklentileri kurmadan önce izinleri incele"
       },

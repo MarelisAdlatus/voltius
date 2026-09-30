@@ -971,15 +971,6 @@
       "changelogPopup": {
         "label": "Show What's New After Updates"
       },
-      "category": {
-        "appearance": "Appearance",
-        "portForwarding": "Port Forwarding",
-        "sftp": "SFTP",
-        "hosts": "Hosts",
-        "updates": "Updates",
-        "plugins": "Plugins",
-        "integrations": "Integrations"
-      },
       "pluginInstallReview": {
         "label": "Review permissions before installing plugins"
       },

@@ -999,15 +999,6 @@
       "restoreWorkspace": { "label": "启动时恢复工作区" },
       "crossDeviceSessions": { "label": "跨设备会话" },
       "changelogPopup": { "label": "更新后显示新内容" },
-      "category": {
-        "appearance": "外观",
-        "portForwarding": "端口转发",
-        "sftp": "SFTP",
-        "hosts": "主机",
-        "updates": "更新",
-        "plugins": "插件",
-        "integrations": "集成"
-      },
       "pluginInstallReview": { "label": "安装插件前先审查权限" },
       "mcpServer": { "label": "MCP 服务器" }
     },
