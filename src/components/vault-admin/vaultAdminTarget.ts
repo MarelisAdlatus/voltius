@@ -24,19 +24,17 @@ export interface VaultAdminCapabilities {
  */
 export function vaultAdminCapabilities(
   target: VaultAdminTarget,
-  teams: { id: string; role_ids: string[] }[],
+  teams: { id: string; owner_id: string; role_ids: string[] }[],
   rolesByTeam: Record<string, { id: string; name: string; is_builtin: boolean; permissions?: number }[]>,
+  myUserId: string,
 ): VaultAdminCapabilities {
   const isTeam = !!target.teamId;
   const isLocal = target.kind === "local";
 
-  const myRoles = (() => {
-    if (!target.teamId) return [];
-    const myRoleIds = teams.find((team) => team.id === target.teamId)?.role_ids ?? [];
-    const roles = rolesByTeam[target.teamId] ?? [];
-    return myRoleIds.flatMap((rid) => roles.filter((role) => role.id === rid));
-  })();
-  const isOwner = myRoles.some((r) => r.is_builtin && r.name === "owner");
+  const team = target.teamId ? teams.find((t) => t.id === target.teamId) : undefined;
+  const roles = target.teamId ? rolesByTeam[target.teamId] ?? [] : [];
+  const myRoles = (team?.role_ids ?? []).flatMap((rid) => roles.filter((role) => role.id === rid));
+  const isOwner = !!myUserId && team?.owner_id === myUserId;
   const managesVault = myRoles.some((r) => ((r.permissions ?? 0) & (PERM_BITS.MANAGE_VAULT | PERM_BITS.ADMINISTRATOR)) !== 0);
 
   return {
@@ -47,7 +45,7 @@ export function vaultAdminCapabilities(
     canDelete: isTeam ? isOwner : isLocal && target.vaultId !== "personal",
     canMakePrivate: isTeam && isOwner && isLocal && target.vaultId !== null,
     // The server refuses an owner leaving their own team.
-    canLeave: isTeam && !isOwner,
+    canLeave: isTeam && !!myUserId && !isOwner,
   };
 }
 

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useTeamStore } from "@/stores/teamStore";
 import { useTeamObjectAccessStore } from "@/stores/teamObjectAccessStore";
-import { getMyUserId } from "@/services/teamService";
+import { useMyUserId } from "@/hooks/useMyUserId";
 import {
   resolveCan,
   EDIT_PERMISSION_OF,
@@ -15,9 +15,6 @@ import type { TeamObjectType } from "@/services/teamObjects";
 
 export { PERM_BITS, effectivePermissions, hasBuiltinRole };
 export type { Permission };
-
-// Seeds each new hook instance so a freshly opened panel doesn't render one pass without access.
-let lastKnownUserId = "";
 
 /**
  * Returns a stable `can(permission, vaultId)` checker.
@@ -33,14 +30,7 @@ export function usePermissions(): (permission: Permission, vaultId: string, obje
   const loadMembers = useTeamStore((s) => s.loadMembers);
   const loadRoles = useTeamStore((s) => s.loadRoles);
   const objectAccess = useTeamObjectAccessStore((s) => s.byTeam);
-  const [myUserId, setMyUserId] = useState(lastKnownUserId);
-
-  useEffect(() => {
-    getMyUserId().then((id) => {
-      lastKnownUserId = id ?? "";
-      setMyUserId(lastKnownUserId);
-    }).catch(() => {});
-  }, []);
+  const myUserId = useMyUserId();
 
   useEffect(() => {
     if (teams.length === 0) { loadTeams().catch(() => {}); return; }

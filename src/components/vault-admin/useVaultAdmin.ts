@@ -4,6 +4,7 @@ import { useContextMenu } from "@/components/shared/ContextMenu";
 import { useTeamStore } from "@/stores/teamStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useSubscriptionStore } from "@/stores/subscriptionStore";
+import { useMyUserId } from "@/hooks/useMyUserId";
 import { vaultAdminCapabilities, type VaultAdminTarget } from "./vaultAdminTarget";
 import { vaultMenuItems } from "./vaultMenuItems";
 import type { VaultDialog } from "./VaultAdminDialogs";
@@ -20,9 +21,10 @@ export function useVaultAdmin(
   const [dialog, setDialog] = useState<VaultDialog>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const accountMode = useSubscriptionStore((s) => s.accountMode);
+  const myUserId = useMyUserId();
 
   const caps = target
-    ? vaultAdminCapabilities(target, teams, rolesByTeam)
+    ? vaultAdminCapabilities(target, teams, rolesByTeam, myUserId)
     : { isTeam: false, isOwner: false, canRename: false, canDelete: false, canMakePrivate: false, canLeave: false };
   const memberCount = target?.teamId ? (membersByTeam[target.teamId]?.length ?? null) : null;
   // Mirrors MembersStack's render gate in VaultHeader: a private vault only has
