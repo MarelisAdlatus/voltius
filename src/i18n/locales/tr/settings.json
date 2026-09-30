@@ -509,9 +509,11 @@
         "deleteVault": {
           "title": "Kasayı sil",
           "confirmDesc": "Bu kasayı ve içindeki {{count}} öğeyi kalıcı olarak siler. Bu işlem geri alınamaz.",
+          "confirmDescTeam": "Bu kasayı ve içindeki {{count}} öğeyi tüm üyeler için kalıcı olarak siler. Bu işlem geri alınamaz.",
           "confirmBtn": "Silmeyi onayla",
           "deleting": "Siliniyor…",
-          "failedToast": "Bu kasa tamamen silinemedi — hâlâ burada ancak bazı öğeleri silinmiş olabilir. {{reason}}"
+          "failedToast": "Bu kasa tamamen silinemedi — hâlâ burada ancak bazı öğeleri silinmiş olabilir. {{reason}}",
+          "teamFailedToast": "Bu kasa silinemedi — hiçbir şey silinmedi. {{reason}}"
         },
         "madePrivateToast_one": "Kasa artık özel. {{count}} üyenin erişimi kaldırıldı.",
         "madePrivateToast_other": "Kasa artık özel. {{count}} üyenin erişimi kaldırıldı.",

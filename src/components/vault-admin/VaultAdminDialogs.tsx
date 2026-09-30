@@ -20,7 +20,7 @@ export function VaultAdminDialogs({
 }) {
   const { t } = useTranslation();
   const { membersByTeam } = useTeamStore();
-  const counts = useVaultContents(target.vaultId ?? undefined);
+  const counts = useVaultContents(target.teamId ?? target.vaultId ?? undefined);
   const { busy, rename, remove, makePrivate } = useVaultAdminActions(target, {
     onRenamed,
     onDone: () => { onClose(); onDone?.(); },
@@ -73,7 +73,7 @@ export function VaultAdminDialogs({
     return (
       <ConfirmModal
         title={t("settings.vaults.general.deleteVault.title")}
-        message={t("settings.vaults.general.deleteVault.confirmDesc", { count: items })}
+        message={t(target.teamId ? "settings.vaults.general.deleteVault.confirmDescTeam" : "settings.vaults.general.deleteVault.confirmDesc", { count: items })}
         confirmLabel={t("settings.vaults.general.deleteVault.confirmBtn")}
         busy={busy}
         busyLabel={t("settings.vaults.general.deleteVault.deleting")}

@@ -28,19 +28,15 @@ test("the built-in personal vault can be renamed but never deleted", () => {
   expect(vaultAdminCapabilities(personalVault, [], {}).canRename).toBe(true);
 });
 
-test("a team vault owner can make it private again", () => {
+test("a team vault owner can make it private again or delete it", () => {
   expect(vaultAdminCapabilities(teamVault, teamsAsOwner, roles)).toEqual({
-    isTeam: true, isOwner: true, canRename: true, canDelete: false, canMakePrivate: true,
+    isTeam: true, isOwner: true, canRename: true, canDelete: true, canMakePrivate: true,
   });
 });
 
-// Delete takes the vault's contents with it, and a team vault's contents are the
-// members', held server-side. Make-private is the step that takes ownership of
-// them first; it stays offered here.
-test("a team vault is never deleted from here, not even by its owner", () => {
-  expect(vaultAdminCapabilities(teamVault, teamsAsOwner, roles).canDelete).toBe(false);
+test("only the owner may delete a team vault, as the server enforces", () => {
   expect(vaultAdminCapabilities(teamVault, teamsAsMember, roles).canDelete).toBe(false);
-  expect(vaultAdminCapabilities(teamVault, teamsAsOwner, roles).canMakePrivate).toBe(true);
+  expect(vaultAdminCapabilities(standaloneTeam, teamsAsMember, roles).canDelete).toBe(false);
 });
 
 test("a team vault member is not offered make-private", () => {
@@ -49,9 +45,9 @@ test("a team vault member is not offered make-private", () => {
   expect(caps.canMakePrivate).toBe(false);
 });
 
-test("a standalone team vault has no local vault to delete, but its owner renames the team", () => {
+test("a standalone team vault's owner can rename and delete the team", () => {
   expect(vaultAdminCapabilities(standaloneTeam, teamsAsOwner, roles)).toEqual({
-    isTeam: true, isOwner: true, canRename: true, canDelete: false, canMakePrivate: false,
+    isTeam: true, isOwner: true, canRename: true, canDelete: true, canMakePrivate: false,
   });
 });
 
@@ -66,3 +62,4 @@ test("a non-builtin role literally named owner does not grant ownership", () => 
   const impostor = { t1: [{ id: "r-own", name: "owner", is_builtin: false }] };
   expect(vaultAdminCapabilities(teamVault, teamsAsOwner, impostor).isOwner).toBe(false);
 });
+

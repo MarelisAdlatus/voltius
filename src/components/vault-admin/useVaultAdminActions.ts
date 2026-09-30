@@ -16,6 +16,11 @@ export interface VaultAdminCallbacks {
   onDone?: () => void;
 }
 
+export function deselectVault(id: string) {
+  const { selectedVaultIds, toggleVault } = useVaultStore.getState();
+  if (selectedVaultIds.includes(id)) toggleVault(id);
+}
+
 async function vaultToast(message: string, severity: "info" | "error") {
   const { useNotificationStore } = await import("@/stores/notificationStore");
   useNotificationStore.getState().addToast({
@@ -86,13 +91,26 @@ export function useVaultAdminActions(target: VaultAdminTarget, cb?: VaultAdminCa
    * stays filed under a named vault instead of becoming an orphan.
    */
   const remove = () => exclusive(async () => {
-    if (!target.vaultId) return;
-    try {
-      await deleteVaultWithContents(target.vaultId);
-    } catch (e) {
-      console.error("Failed to delete vault:", e);
-      await failToast("settings.vaults.general.deleteVault.failedToast", e);
-      return;
+    const { vaultId, teamId } = target;
+    if (teamId) {
+      try {
+        // "leave", not "self-deleted": the echo must still wipe this device's team copies, just without a removal notice.
+        markSelfDeparture(teamId, "leave");
+        await deleteTeam(teamId);
+      } catch (e) {
+        await failToast("settings.vaults.general.deleteVault.teamFailedToast", e);
+        return;
+      }
+      deselectVault(teamId);
+    }
+    if (vaultId) {
+      try {
+        await deleteVaultWithContents(vaultId);
+      } catch (e) {
+        console.error("Failed to delete vault:", e);
+        await failToast("settings.vaults.general.deleteVault.failedToast", e);
+        return;
+      }
     }
     cb?.onDone?.();
   });

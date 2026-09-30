@@ -18,9 +18,8 @@ export interface VaultAdminCapabilities {
 
 /**
  * Conditions carried over from the former VaultGeneralTab: `cloud` is a
- * standalone team vault with no local row to rename or delete, and "personal" is
- * the built-in vault that must always exist. `canDelete` additionally refuses a
- * team vault — see the note on it.
+ * standalone team vault with no local row, and "personal" is
+ * the built-in vault that must always exist.
  */
 export function vaultAdminCapabilities(
   target: VaultAdminTarget,
@@ -43,12 +42,8 @@ export function vaultAdminCapabilities(
     isTeam,
     isOwner,
     canRename: isTeam ? isOwner || managesVault : isLocal,
-    // Delete now takes the vault's contents with it, and a team vault's contents
-    // are the members' — held server-side, not this device's to destroy. Making
-    // it private first is the step that takes ownership of them; deleting the
-    // team is the step that destroys them for everyone. Both are one item up
-    // this same menu, so there is nothing to reach that this refusal blocks.
-    canDelete: isLocal && !isTeam && target.vaultId !== "personal",
+    // The server lets only the owner delete a team, and that deletes it for every member.
+    canDelete: isTeam ? isOwner : isLocal && target.vaultId !== "personal",
     canMakePrivate: isTeam && isOwner && isLocal && target.vaultId !== null,
   };
 }

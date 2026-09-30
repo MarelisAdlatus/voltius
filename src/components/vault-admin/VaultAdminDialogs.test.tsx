@@ -69,6 +69,11 @@ test("the delete dialog needs an explicit confirm and then deletes once", () => 
   expect(h.remove).toHaveBeenCalledTimes(1);
 });
 
+test("the team delete dialog warns that it deletes for every member", () => {
+  render(<VaultAdminDialogs target={{ ...target, teamId: "t1" }} dialog="delete" onClose={vi.fn()} />);
+  expect(screen.getByText("settings.vaults.general.deleteVault.confirmDescTeam")).toBeTruthy();
+});
+
 test("cancelling the delete dialog deletes nothing", () => {
   const onClose = vi.fn();
   render(<VaultAdminDialogs target={target} dialog="delete" onClose={onClose} />);
@@ -84,3 +89,4 @@ test("the make-private dialog uses the warning tone, not the danger tone", () =>
   expect(btn.className).toContain("btn-warning");
   expect(btn.className).not.toContain("btn-danger");
 });
+
