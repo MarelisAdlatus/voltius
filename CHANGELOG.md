@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-09-30
+
+### Changed
+
+- A team vault's name is now the team's name on the server: renaming a team vault renames the team, and the name is no longer saved or synced locally (#415)
+- The team list, and commands, snippet variables and workspace tabs for team hosts, now stay in memory only instead of being written to disk (#415)
+
+### Fixed
+
+- Team hosts without the Connect permission no longer resolve credentials, and Connect is disabled on their host cards and menus; View and Copy secrets now require Connect, as on the server (#415)
+
 ## [0.44.0] - 2026-09-29
 
 ### Added
