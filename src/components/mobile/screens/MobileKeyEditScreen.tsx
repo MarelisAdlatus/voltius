@@ -5,6 +5,7 @@ import { KeyForm } from "@/components/keychain/KeyForm";
 import { useAllKeys } from "@/hooks/useAllKeys";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useMobileNavStore } from "@/stores/mobileNavStore";
+import { useCloseWhenGone } from "@/hooks/useCloseWhenGone";
 import { saveKeyFromForm } from "@/services/keychainForm";
 
 export default function MobileKeyEditScreen({ keyId, mode }: { keyId?: string; mode?: "import" | "generate" }) {
@@ -16,6 +17,7 @@ export default function MobileKeyEditScreen({ keyId, mode }: { keyId?: string; m
   // that key rather than minting a second one (mirrors MobileHostEditScreen).
   const [editingId, setEditingId] = useState<string | undefined>(keyId);
   const editing = editingId ? keys.find((k) => k.id === editingId) ?? null : null;
+  useCloseWhenGone(editingId, editing !== null, pop);
   const flushRef = useRef<(() => void) | null>(null);
 
   const flushAndPop = () => {

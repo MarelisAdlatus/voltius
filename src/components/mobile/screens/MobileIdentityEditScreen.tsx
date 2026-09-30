@@ -5,6 +5,7 @@ import { IdentityForm } from "@/components/keychain/IdentityForm";
 import { useAllIdentities } from "@/hooks/useAllIdentities";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useMobileNavStore } from "@/stores/mobileNavStore";
+import { useCloseWhenGone } from "@/hooks/useCloseWhenGone";
 import { saveIdentityFromForm } from "@/services/keychainForm";
 
 export default function MobileIdentityEditScreen({ identityId }: { identityId?: string }) {
@@ -14,6 +15,7 @@ export default function MobileIdentityEditScreen({ identityId }: { identityId?: 
   const selectedVaultIds = useVaultStore((s) => s.selectedVaultIds);
   const [editingId, setEditingId] = useState<string | undefined>(identityId);
   const editing = editingId ? identities.find((i) => i.id === editingId) ?? null : null;
+  useCloseWhenGone(editingId, editing !== null, pop);
   const flushRef = useRef<(() => void) | null>(null);
   const inlineKeyIdRef = useRef<string | null>(null);
 

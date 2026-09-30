@@ -14,6 +14,7 @@ import { useEffectivePinnedPredicate } from "@/hooks/useEffectivePinned";
 import { useVaultCascade } from "@/hooks/useVaultCascade";
 import { useSyncPrefsStore } from "@/stores/syncPrefsStore";
 import { usePermissions } from "@/hooks/usePermission";
+import { useCloseWhenGone } from "@/hooks/useCloseWhenGone";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useAccessibleVaultIds, useScopedVaultId } from "@/hooks/useAccessibleVaultIds";
 import { useDefaultVaultId } from "@/hooks/useWritableVaultIds";
@@ -121,6 +122,10 @@ export default function KeychainPage() {
   const scopedFolders = useScopedFolders(folders, accessibleVaultIds, "keychain");
   const scopedFolderIds = useMemo(() => new Set(scopedFolders.map((f) => f.id)), [scopedFolders]);
   const editingFolder = editingFolderId ? scopedFolders.find((f) => f.id === editingFolderId) ?? null : null;
+  useCloseWhenGone(editingKeyId, editingKey !== null, () => closePanel());
+  useCloseWhenGone(editingIdentityId, editingIdentity !== null, () => closePanel());
+  useCloseWhenGone(exportingKey?.id, !!exportingKey && keys.some((k) => k.id === exportingKey.id), () => closePanel());
+  useCloseWhenGone(editingFolderId, editingFolder !== null, () => setEditingFolderId(null));
 
   const {
     folderPath,
@@ -863,7 +868,6 @@ export default function KeychainPage() {
               onSelectSelf={() => selectSingle(editingFolder.id)}
               parentOptions={foldersOutsideSubtree(scopedFolders, editingFolder.id)}
               vaults={vaultOptions.filter((v) => v.id !== (editingFolder.vault_id ?? "personal"))}
-              canEdit={can("EDIT_FOLDERS", editingFolder.vault_id ?? "personal", editingFolder.id)}
               onMoveToVault={(vaultId) => handleMoveFolderToVault(editingFolder, vaultId)}
               onCopyToVault={(vaultId) => handleCopyFolderToVault(editingFolder, vaultId)}
             />
@@ -886,7 +890,6 @@ export default function KeychainPage() {
               flushRef={keyFormFlushRef}
               isDirtyRef={keyFormIsDirtyRef}
               vaults={editingKey ? vaultOptions.filter((v) => v.id !== (editingKey.vault_id ?? "personal")) : []}
-              canEdit={editingKey ? can("EDIT_KEYS", editingKey.vault_id ?? "personal", editingKey.id) : false}
               onMoveToVault={editingKey ? (vaultId) => { void handleMoveKeyToVault(editingKey, vaultId); } : undefined}
               onCopyToVault={editingKey ? (vaultId) => { void handleCopyKeyToVault(editingKey, vaultId); } : undefined}
             />
@@ -901,7 +904,6 @@ export default function KeychainPage() {
               flushRef={identityFormFlushRef}
               isDirtyRef={identityFormIsDirtyRef}
               vaults={editingIdentity ? vaultOptions.filter((v) => v.id !== (editingIdentity.vault_id ?? "personal")) : []}
-              canEdit={editingIdentity ? can("EDIT_IDENTITIES", editingIdentity.vault_id ?? "personal", editingIdentity.id) : false}
               onMoveToVault={editingIdentity ? (vaultId) => { void handleMoveIdentityToVault(editingIdentity, vaultId); } : undefined}
               onCopyToVault={editingIdentity ? (vaultId) => { void handleCopyIdentityToVault(editingIdentity, vaultId); } : undefined}
             />

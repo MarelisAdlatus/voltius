@@ -5,6 +5,7 @@ import ConnectionForm, { type ConnectionFormHandle } from "@/components/connecti
 import { useAllConnections } from "@/hooks/useAllConnections";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useMobileNavStore } from "@/stores/mobileNavStore";
+import { useCloseWhenGone } from "@/hooks/useCloseWhenGone";
 import { saveHostFromForm } from "@/services/hostForm";
 
 export default function MobileHostEditScreen({ hostId }: { hostId?: string }) {
@@ -17,6 +18,7 @@ export default function MobileHostEditScreen({ hostId }: { hostId?: string }) {
   // duplicates (mirrors desktop HostsPage.handleSubmit).
   const [editingId, setEditingId] = useState<string | undefined>(hostId);
   const editing = editingId ? connections.find((c) => c.id === editingId) ?? null : null;
+  useCloseWhenGone(editingId, editing !== null, pop);
   const formRef = useRef<ConnectionFormHandle>(null);
 
   // Both exits flush any pending autosave debounce before leaving so a last-keystroke
@@ -45,7 +47,6 @@ export default function MobileHostEditScreen({ hostId }: { hostId?: string }) {
           }}
           onClose={pop}
           vaults={[]}
-          canEdit={true}
         />
       </div>
     </div>

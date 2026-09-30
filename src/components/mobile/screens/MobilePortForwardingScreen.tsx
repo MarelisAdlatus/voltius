@@ -5,6 +5,7 @@ import { useAllPortForwardingRules } from "@/hooks/useAllPortForwardingRules";
 import { useAllFolders } from "@/hooks/useAllFolders";
 import { useFolderNavigation } from "@/hooks/useFolderNavigation";
 import { useRuleTunnels } from "@/hooks/useRuleTunnels";
+import { useCloseWhenGone } from "@/hooks/useCloseWhenGone";
 import { useFolderStore } from "@/stores/folderStore";
 import { usePortForwardingStore } from "@/stores/portForwardingStore";
 import { useVaultStore } from "@/stores/vaultStore";
@@ -62,6 +63,8 @@ export default function MobilePortForwardingScreen() {
   }, [allRules, nav.activeFolderId, pfFolderIds, search]);
 
   const closeForm = () => { setFormRule(undefined); dirtyRef.current = false; };
+  const shownRuleId = formRule && formRule !== "new" ? formRule.id : null;
+  useCloseWhenGone(shownRuleId, allRules.some((r) => r.id === shownRuleId), closeForm);
   const targetVaultId = nav.folderPath[nav.folderPath.length - 1]?.vault_id ?? selectedVaultIds[0] ?? "personal";
   const createFolder = (name: string) =>
     void saveFolder({ name, object_type: "port_forwarding", parent_folder_id: nav.activeFolderId ?? undefined, vault_id: targetVaultId });
