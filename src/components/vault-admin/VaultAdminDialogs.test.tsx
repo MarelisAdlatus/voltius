@@ -16,7 +16,10 @@ vi.mock("./useVaultAdminActions", () => ({
 // vi.mock factory is hoisted above module scope and cannot close over an
 // outer const.
 vi.mock("@/stores/teamStore", () => {
-  const teamState = { teams: [], rolesByTeam: {}, membersByTeam: {} };
+  const teamState = {
+    teams: [], rolesByTeam: {}, loadMembers: async () => {},
+    membersByTeam: { t1: [{ user_id: "u-other" }, { user_id: "u-me" }] },
+  };
   return {
     useTeamStore: Object.assign(
       (sel?: (s: typeof teamState) => unknown) => (sel ? sel(teamState) : teamState),
@@ -24,6 +27,12 @@ vi.mock("@/stores/teamStore", () => {
     ),
   };
 });
+
+vi.mock("@/services/teamService", () => ({ getMyUserId: async () => "u-me" }));
+vi.mock("@/components/members/OffboardingDialog", () => ({
+  OffboardingDialog: ({ members, mode }: { members: { user_id: string }[]; mode: string }) =>
+    <div>{`${mode}:${members.map((m) => m.user_id).join(",")}`}</div>,
+}));
 
 import { VaultAdminDialogs } from "./VaultAdminDialogs";
 import type { VaultAdminTarget } from "./vaultAdminTarget";
@@ -90,3 +99,7 @@ test("the make-private dialog uses the warning tone, not the danger tone", () =>
   expect(btn.className).not.toContain("btn-danger");
 });
 
+test("the leave dialog is the members panel's own leave confirmation, for this user only", async () => {
+  render(<VaultAdminDialogs target={{ ...target, teamId: "t1" }} dialog="leave" onClose={vi.fn()} />);
+  expect(await screen.findByText("leave:u-me")).toBeTruthy();
+});

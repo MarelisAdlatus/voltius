@@ -19,7 +19,7 @@ const standaloneTeam: VaultAdminTarget =
 
 test("a private local vault can be renamed and deleted, nothing else", () => {
   expect(vaultAdminCapabilities(privateVault, [], {})).toEqual({
-    isTeam: false, isOwner: false, canRename: true, canDelete: true, canMakePrivate: false,
+    isTeam: false, isOwner: false, canRename: true, canDelete: true, canMakePrivate: false, canLeave: false,
   });
 });
 
@@ -30,7 +30,7 @@ test("the built-in personal vault can be renamed but never deleted", () => {
 
 test("a team vault owner can make it private again or delete it", () => {
   expect(vaultAdminCapabilities(teamVault, teamsAsOwner, roles)).toEqual({
-    isTeam: true, isOwner: true, canRename: true, canDelete: true, canMakePrivate: true,
+    isTeam: true, isOwner: true, canRename: true, canDelete: true, canMakePrivate: true, canLeave: false,
   });
 });
 
@@ -47,7 +47,7 @@ test("a team vault member is not offered make-private", () => {
 
 test("a standalone team vault's owner can rename and delete the team", () => {
   expect(vaultAdminCapabilities(standaloneTeam, teamsAsOwner, roles)).toEqual({
-    isTeam: true, isOwner: true, canRename: true, canDelete: true, canMakePrivate: false,
+    isTeam: true, isOwner: true, canRename: true, canDelete: true, canMakePrivate: false, canLeave: false,
   });
 });
 
@@ -63,3 +63,9 @@ test("a non-builtin role literally named owner does not grant ownership", () => 
   expect(vaultAdminCapabilities(teamVault, teamsAsOwner, impostor).isOwner).toBe(false);
 });
 
+test("a team member can leave, the owner cannot (the server refuses an owner leaving)", () => {
+  expect(vaultAdminCapabilities(teamVault, teamsAsMember, roles).canLeave).toBe(true);
+  expect(vaultAdminCapabilities(standaloneTeam, teamsAsMember, roles).canLeave).toBe(true);
+  expect(vaultAdminCapabilities(teamVault, teamsAsOwner, roles).canLeave).toBe(false);
+  expect(vaultAdminCapabilities(privateVault, [], {}).canLeave).toBe(false);
+});

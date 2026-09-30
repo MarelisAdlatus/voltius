@@ -14,6 +14,7 @@ export interface VaultAdminCapabilities {
   canRename: boolean;
   canDelete: boolean;
   canMakePrivate: boolean;
+  canLeave: boolean;
 }
 
 /**
@@ -45,6 +46,8 @@ export function vaultAdminCapabilities(
     // The server lets only the owner delete a team, and that deletes it for every member.
     canDelete: isTeam ? isOwner : isLocal && target.vaultId !== "personal",
     canMakePrivate: isTeam && isOwner && isLocal && target.vaultId !== null,
+    // The server refuses an owner leaving their own team.
+    canLeave: isTeam && !isOwner,
   };
 }
 
