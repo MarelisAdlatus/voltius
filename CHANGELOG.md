@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-01
+
+### Added
+
+- Leave a team vault from the vault menu
+- Updates are now checked even with auto-download off, so What's New shows a new version; the setting only decides whether it is downloaded (#417)
+
+### Changed
+
+- Custom roles, per-member permissions and per-object permissions now need the team owner's Business plan. Below Business, custom roles and permission grants stop working; restrictions stay in place and can be removed. Upgrading restores everything (#419)
+- Self-hosted: update the server together with the app (`ghcr.io/voltiusapp/voltius-server:sha-b522ae8` or newer, VoltiusApp/server#66)
+
+### Fixed
+
+- The owner can delete a team vault from the vault menu
+- The vault menu no longer treats the owner as a member while roles are loading, so Delete and Make private show and Leave is not offered
+- Every Android screen now shows only the vault on screen (#416)
+- Losing edit or View secrets access while an object is open now makes its editor read-only and hides its secrets immediately
+- The Logs view shows a converted team vault's full audit trail
+- Clicking Invite in vault share search results works again
+- The sync, share, notification and account menus and the new-session popover now close and fade the same way; clicking the sync button while its menu is open closes it
+- Settings search lists terminal toggles under Terminal instead of Appearance
+- System proxy detection and bypass rules: macOS proxy exceptions and simple hostnames, bypass entries with a port, and NO_PROXY now match consistently; the global proxy password survives sign-in and account switches (#396)
+- Esc no longer restores a maximized pane, so vim and tmux receive it
+
 ## [0.44.1] - 2026-09-30
 
 ### Changed
