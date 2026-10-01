@@ -1,10 +1,12 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { BusinessLapseNotice, BusinessLockLine } from "@/components/shared/BusinessLockBanner";
 import { FormSection } from "@/components/shared/Panel";
 import { PickerSurface } from "@/components/shared/PickerSurface";
 import { PickerOption, PickerSearch } from "@/components/shared/pickerParts";
 import { PermissionOverrideRow } from "@/components/members/panels/PermissionOverrideRow";
 import { permissionLabel, roleLabel } from "@/components/members/roleChips";
+import { useBusinessLock } from "@/hooks/useBusinessLock";
 import { useRuleSet } from "@/hooks/useRuleSet";
 import { saveObjectRules, syncWithFolder } from "@/services/ruleSetEditing";
 import { isSynced, setOfParent } from "@/services/ruleSetPointers";
@@ -44,13 +46,14 @@ function listedSubjects(entries: RuleEntry[], roles: TeamRole[], added: Subject[
   return all.filter((s, i) => all.findIndex((o) => subjectKey(o) === subjectKey(s)) === i);
 }
 
-function SubjectChips({ listed, candidates, selected, nameOf, onSelect, onAdd }: {
+function SubjectChips({ listed, candidates, selected, nameOf, onSelect, onAdd, disabled }: {
   listed: Subject[];
   candidates: Subject[];
   selected: Subject;
   nameOf: (s: Subject) => string;
   onSelect: (s: Subject) => void;
   onAdd: (s: Subject) => void;
+  disabled: boolean;
 }) {
   const { t } = useTranslation();
   const [picking, setPicking] = useState(false);
@@ -71,24 +74,28 @@ function SubjectChips({ listed, candidates, selected, nameOf, onSelect, onAdd }:
           {nameOf(s)}
         </button>
       ))}
-      <button ref={addRef} type="button" onClick={() => setPicking(true)} className="px-2 py-0.5 rounded-md text-xs text-(--t-accent)">
-        {t("shared.permissions.section.addSubject")}
-      </button>
-      <PickerSurface open={picking} onClose={() => setPicking(false)} anchorRef={addRef} width="content" minWidth="14rem" align="right">
-        <div className="sticky top-0 bg-(--t-bg-card) p-1.5">
-          <PickerSearch value={query} onChange={setQuery} placeholder={t("shared.permissions.section.searchSubjects")} />
-        </div>
-        {matches.length === 0
-          ? <p className="px-3 py-2 text-xs text-(--t-text-dim)">{t("shared.permissions.section.noSubjectsLeft")}</p>
-          : matches.map((s) => (
-            <PickerOption
-              key={subjectKey(s)}
-              label={nameOf(s)}
-              active={false}
-              onClick={() => { onAdd(s); setPicking(false); setQuery(""); }}
-            />
-          ))}
-      </PickerSurface>
+      {!disabled && (
+        <>
+          <button ref={addRef} type="button" onClick={() => setPicking(true)} className="px-2 py-0.5 rounded-md text-xs text-(--t-accent)">
+            {t("shared.permissions.section.addSubject")}
+          </button>
+          <PickerSurface open={picking} onClose={() => setPicking(false)} anchorRef={addRef} width="content" minWidth="14rem" align="right">
+            <div className="sticky top-0 bg-(--t-bg-card) p-1.5">
+              <PickerSearch value={query} onChange={setQuery} placeholder={t("shared.permissions.section.searchSubjects")} />
+            </div>
+            {matches.length === 0
+              ? <p className="px-3 py-2 text-xs text-(--t-text-dim)">{t("shared.permissions.section.noSubjectsLeft")}</p>
+              : matches.map((s) => (
+                <PickerOption
+                  key={subjectKey(s)}
+                  label={nameOf(s)}
+                  active={false}
+                  onClick={() => { onAdd(s); setPicking(false); setQuery(""); }}
+                />
+              ))}
+          </PickerSurface>
+        </>
+      )}
     </div>
   );
 }
@@ -115,6 +122,7 @@ function ObjectPermissions({ objectId, vaultId, type }: PermissionsSectionProps)
   const teamSnippetFolders = useSnippetFolderStore((s) => s.teamSnippetFolders);
   const access = entries?.[objectId];
   const ruleSet = useRuleSet(teamId ?? "", access?.ruleSetId ?? null);
+  const { locked } = useBusinessLock(teamId);
   const [draft, setDraft] = useState<RuleEntry[]>(ruleSet.entries);
   const [loaded, setLoaded] = useState(ruleSet.entries);
   const [selected, setSelected] = useState<Subject>({ type: "everyone" });
@@ -156,7 +164,7 @@ function ObjectPermissions({ objectId, vaultId, type }: PermissionsSectionProps)
   ].filter((s) => !listed.some((l) => subjectKey(l) === subjectKey(s)));
 
   const rolesGranting = (bit: number, roleIds?: string[]) =>
-    roles.filter((r) => (!roleIds || roleIds.includes(r.id)) && (r.permissions & bit) !== 0).map((r) => roleLabel(t, r.name));
+    roles.filter((r) => (!locked || r.is_builtin) && (!roleIds || roleIds.includes(r.id)) && (r.permissions & bit) !== 0).map((r) => roleLabel(t, r.name));
   const sourceOf = (from: string[]) =>
     from.length > 2 ? [t("shared.permissions.section.roleCount", { count: from.length })] : from;
 
@@ -167,17 +175,14 @@ function ObjectPermissions({ objectId, vaultId, type }: PermissionsSectionProps)
       const others = draft.filter((e) => !(e.subject_type === "member" && e.subject_id === selected.id));
       return {
         from: sourceOf(rolesGranting(bit, member?.role_ids ?? [])),
-        grants: member ? (resolveObjectPermissions(member, roles, others) & bit) !== 0 : false,
+        grants: member ? (resolveObjectPermissions(member, roles, others, locked) & bit) !== 0 : false,
       };
     }
     const from = rolesGranting(bit, selected.type === "role" ? [selected.id] : undefined);
     return { from: sourceOf(from), grants: from.length > 0 };
   };
 
-  const change = (permission: Permission, next: OverrideState) => {
-    const current = entryFor(draft, selected);
-    const masks = applyOverrideState(permission, current?.allow ?? 0, current?.deny ?? 0, next);
-    const nextDraft = withEntry(draft, selected, masks.allow, masks.deny);
+  const save = (nextDraft: RuleEntry[]) => {
     const gen = generation.current;
     setDraft(nextDraft);
     setError(null);
@@ -197,6 +202,12 @@ function ObjectPermissions({ objectId, vaultId, type }: PermissionsSectionProps)
     });
   };
 
+  const change = (permission: Permission, next: OverrideState) => {
+    const current = entryFor(draft, selected);
+    const masks = applyOverrideState(permission, current?.allow ?? 0, current?.deny ?? 0, next);
+    save(withEntry(draft, selected, masks.allow, masks.deny));
+  };
+
   const title = type === "key" ? "shared.permissions.section.titleKey"
     : type === "identity" ? "shared.permissions.section.titleIdentity"
     : "shared.permissions.section.title";
@@ -208,50 +219,65 @@ function ObjectPermissions({ objectId, vaultId, type }: PermissionsSectionProps)
   const connectDenied = connectState === "deny" || (connectState === "inherit" && !preview("CONNECT").grants);
   const connectLabel = isCredential ? t("shared.permissions.section.use") : permissionLabel(t, "CONNECT");
 
+  const hasRules = draft.length > 0 || ruleSet.status !== "ok";
+
   return (
     <FormSection label={t(title)}>
-      {isCredential && <p className="text-xs text-(--t-text-dim)">{t("shared.permissions.section.adminNote")}</p>}
-      <div className="flex items-center justify-between gap-2 text-xs">
-        <span className="text-(--t-text-secondary)">{banner}</span>
-        {!synced && (
-          <button
-            type="button"
-            className="text-(--t-accent)"
-            onClick={() => void syncWithFolder(target).catch((e) => setError(errorText(e)))}
-          >
-            {t(parentSet === null ? "shared.permissions.section.useTeams" : "shared.permissions.section.syncNow")}
-          </button>
-        )}
-      </div>
-      <SubjectChips
-        listed={listed}
-        candidates={candidates}
-        selected={selected}
-        nameOf={nameOf}
-        onSelect={setSelected}
-        onAdd={(s) => { setAdded((a) => [...a, s]); setSelected(s); }}
-      />
-      <div>
-        {OBJECT_RULE_ROWS[type].map((permission) => {
-          const p = preview(permission);
-          const needsConnect = connectDenied && (permission === "VIEW_SECRETS" || permission === "COPY_SECRETS");
-          return (
-            <PermissionOverrideRow
-              key={permission}
-              permission={permission}
-              label={isCredential && permission === "CONNECT" ? connectLabel : undefined}
-              note={needsConnect ? t("shared.permissions.section.requiresConnect", { connect: connectLabel }) : undefined}
-              state={overrideStateOf(permission, current?.allow ?? 0, current?.deny ?? 0)}
-              inheritedFrom={p.from}
-              inheritedGrants={p.grants && !needsConnect}
-              disabled={ruleSet.status !== "ok" || needsConnect}
-              onChange={(next) => change(permission, next)}
-            />
-          );
-        })}
-      </div>
-      {(error || ruleSet.status === "error") && (
-        <p className="text-xs text-(--t-status-error)">{error ?? ruleSet.error ?? t("shared.permissions.section.loadFailed")}</p>
+      {locked && !hasRules ? (
+        <BusinessLockLine teamId={teamId} label={t("shared.businessLock.objectLine")} />
+      ) : (
+        <>
+          <BusinessLapseNotice
+            teamId={teamId}
+            message={t("shared.businessLock.objectLapsed")}
+            removeLabel={t("shared.businessLock.removeRules")}
+            onRemove={!synced && draft.length > 0 ? async () => save([]) : undefined}
+          />
+          {isCredential && <p className="text-xs text-(--t-text-dim)">{t("shared.permissions.section.adminNote")}</p>}
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="text-(--t-text-secondary)">{banner}</span>
+            {!synced && (
+              <button
+                type="button"
+                className="text-(--t-accent)"
+                onClick={() => void syncWithFolder(target).catch((e) => setError(errorText(e)))}
+              >
+                {t(parentSet === null ? "shared.permissions.section.useTeams" : "shared.permissions.section.syncNow")}
+              </button>
+            )}
+          </div>
+          <SubjectChips
+            listed={listed}
+            candidates={candidates}
+            selected={selected}
+            nameOf={nameOf}
+            onSelect={setSelected}
+            onAdd={(s) => { setAdded((a) => [...a, s]); setSelected(s); }}
+            disabled={locked}
+          />
+          <div>
+            {OBJECT_RULE_ROWS[type].map((permission) => {
+              const p = preview(permission);
+              const needsConnect = connectDenied && (permission === "VIEW_SECRETS" || permission === "COPY_SECRETS");
+              return (
+                <PermissionOverrideRow
+                  key={permission}
+                  permission={permission}
+                  label={isCredential && permission === "CONNECT" ? connectLabel : undefined}
+                  note={needsConnect ? t("shared.permissions.section.requiresConnect", { connect: connectLabel }) : undefined}
+                  state={overrideStateOf(permission, current?.allow ?? 0, current?.deny ?? 0)}
+                  inheritedFrom={p.from}
+                  inheritedGrants={p.grants && !needsConnect}
+                  disabled={locked || ruleSet.status !== "ok" || needsConnect}
+                  onChange={(next) => change(permission, next)}
+                />
+              );
+            })}
+          </div>
+          {(error || ruleSet.status === "error") && (
+            <p className="text-xs text-(--t-status-error)">{error ?? ruleSet.error ?? t("shared.permissions.section.loadFailed")}</p>
+          )}
+        </>
       )}
     </FormSection>
   );

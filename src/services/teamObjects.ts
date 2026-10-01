@@ -1,5 +1,6 @@
 import i18n from "@/i18n";
 import { appFetch } from "@/services/http";
+import { refuseIfPlanRequired } from "@/services/planRequired";
 import { getJwt, getServerUrl, isJwtExpiredOrExpiring, tryRefreshJwt } from "@/services/authTokens";
 import { clientHeaders } from "@/services/clientHeaders";
 import type { RuleEntry } from "@/services/permissions";
@@ -78,7 +79,7 @@ async function ensureOk(res: Response, messageKey: string, opts?: { ignoreStatus
   throw apiError(i18n.t(messageKey, { status: res.status }), { status: res.status });
 }
 
-async function fetchTeamApi(path: string, init: RequestInit): Promise<Response> {
+async function fetchTeamApi(path: string, init: RequestInit, opts?: { passPaymentRequired?: boolean }): Promise<Response> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) throw apiError(i18n.t("common.error.notConnectedToServer"), { offline: true });
 
@@ -100,7 +101,7 @@ async function fetchTeamApi(path: string, init: RequestInit): Promise<Response> 
     res = await appFetch(`${serverUrl}${path}`, { ...init, headers: makeHeaders(newJwt) });
   }
   if (res.status === 403) throw apiError(i18n.t("common.error.noPermissionTeamVaultOp"), { status: res.status });
-  if (res.status === 402) throw apiError(i18n.t("common.error.teamVaultRequiresSubscription"), { status: res.status });
+  if (res.status === 402 && !opts?.passPaymentRequired) throw apiError(i18n.t("common.error.teamVaultRequiresSubscription"), { status: res.status });
   if (res.status === 426) throw apiError(i18n.t("common.error.clientTooOldForTeamVault"), { status: res.status });
   if (res.status === 429) {
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
@@ -133,7 +134,8 @@ async function ruleSetRequest(teamId: string, path: string, init: RequestInit, m
   const res = await fetchTeamApi(`/v1/teams/${teamId}/rule-sets${path}`, {
     ...init,
     headers: { "Content-Type": "application/json" },
-  });
+  }, { passPaymentRequired: true });
+  refuseIfPlanRequired(res);
   if (res.status === 413) throw apiError(i18n.t("common.error.tooManyRuleEntries"), { status: 413 });
   await ensureOk(res, messageKey);
   return res;

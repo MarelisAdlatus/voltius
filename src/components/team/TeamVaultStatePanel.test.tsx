@@ -15,6 +15,7 @@ import TeamVaultStatePanel from "./TeamVaultStatePanel";
 import { checkForUpdate } from "@/services/updater";
 import { useTeamStore } from "@/stores/teamStore";
 import type { Team, TeamMember } from "@/services/teamService";
+import { PERM_BITS } from "@/services/permissions";
 
 const TEAM: Team = {
   id: "t1", name: "Ops", owner_id: "u9", owner_tier: "team", created_at: "", role_ids: [],
@@ -66,4 +67,20 @@ test("update_required explains itself and offers a check for updates", () => {
   expect(screen.getByText("layout.mainPanel.teamVault.updateRequiredTitle")).toBeTruthy();
   fireEvent.click(screen.getByText("layout.mainPanel.checkForUpdates"));
   expect(checkForUpdate).toHaveBeenCalled();
+});
+
+test("plan_lapsed tells the member the Business plan lapsed", () => {
+  render(<TeamVaultStatePanel status="plan_lapsed" teamId="t1" />);
+  expect(screen.getByText("layout.mainPanel.teamVault.planLapsedTitle")).toBeTruthy();
+  expect(screen.getByText("layout.mainPanel.teamVault.planLapsedBody")).toBeTruthy();
+});
+
+test("forbidden keeps the generic copy even for a lapsed member", () => {
+  useTeamStore.setState({
+    teams: [{ ...TEAM, owner_tier: "teams", permission_allow: PERM_BITS.VIEW | PERM_BITS.CONNECT }],
+    rolesByTeam: { t1: [] },
+  });
+  render(<TeamVaultStatePanel status="forbidden" teamId="t1" />);
+  expect(screen.getByText("layout.mainPanel.teamVault.forbiddenTitle")).toBeTruthy();
+  expect(screen.queryByText("layout.mainPanel.teamVault.planLapsedTitle")).toBeNull();
 });

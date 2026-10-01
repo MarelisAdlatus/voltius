@@ -3,11 +3,13 @@ import { Icon } from "@iconify/react";
 import { useTranslation } from "react-i18next";
 import { useTeamStore } from "@/stores/teamStore";
 import type { TeamMember, TeamRole } from "@/stores/teamStore";
-import { useHistoryStore } from "@/stores/historyStore";
+import { useHistoryStore, type HistoryEntry } from "@/stores/historyStore";
 import { PanelShell, PanelHeader, FormSection } from "@/components/shared/Panel";
 import { runTeamAction } from "@/services/teamActionFeedback";
 import { RoleModal } from "@/components/members/panels/RolesPanel";
 import { ROLE_META, RoleBlurb, permissionLabel, roleLabel } from "@/components/members/roleChips";
+import { useBusinessLock } from "@/hooks/useBusinessLock";
+import { BusinessLapseNotice, BusinessLockLine } from "@/components/shared/BusinessLockBanner";
 import { RoleBadges } from "@/components/members/roleBadges";
 import { OffboardingDialog } from "@/components/members/OffboardingDialog";
 import { ConfirmModal } from "@/components/shared/ConfirmModal";
@@ -48,6 +50,7 @@ export function MemberDetailPanel({
 }: MemberDetailPanelProps) {
   const { t } = useTranslation();
   const push = useHistoryStore((s) => s.push);
+  const { locked } = useBusinessLock(teamId);
 
   const [error, setError] = useState("");
   const [toggling, setToggling] = useState<string | null>(null);
@@ -58,7 +61,7 @@ export function MemberDetailPanel({
   const [permissionFilter, setPermissionFilter] = useState("");
   // Stores the intent, not the computed masks — commitOverride recomputes them
   // from the render current at confirm time, in case member state changed meanwhile.
-  const [pendingRevoke, setPendingRevoke] = useState<{ permission: Permission; next: OverrideState } | null>(null);
+  const [pendingRevoke, setPendingRevoke] = useState<{ permission: Permission; next: OverrideState } | "clear" | null>(null);
 
   const canChangeRoles = canManageMembers && !isMe;
   const canRemove = canManageMembers && !isTargetOwner && !isMe;
@@ -122,7 +125,7 @@ export function MemberDetailPanel({
 
   const allow = member.permission_allow ?? 0;
   const deny = member.permission_deny ?? 0;
-  const viewerEffective = viewer ? effectivePermissions(viewer, teamRoles) : 0;
+  const viewerEffective = viewer ? effectivePermissions(viewer, teamRoles, locked) : 0;
 
   // A server predating overrides omits both masks; a zero mask serializes as 0.
   const serverSupportsOverrides =
@@ -144,7 +147,7 @@ export function MemberDetailPanel({
 
   const rolesGranting = (permission: Permission) =>
     teamRoles
-      .filter((r) => member.role_ids.includes(r.id) && (r.permissions & PERM_BITS[permission]) !== 0)
+      .filter((r) => (!locked || r.is_builtin) && member.role_ids.includes(r.id) && (r.permissions & PERM_BITS[permission]) !== 0)
       .map((r) => roleLabel(t, r.name));
 
   const offendingBits = allow & ~viewerEffective;
@@ -164,11 +167,39 @@ export function MemberDetailPanel({
   // A whole-mask notHeld lock still lets the admin clear the very bit that
   // caused it — clearing it produces a mask the server accepts.
   const rowDisabled = (permission: Permission) =>
-    overriding || pendingRevoke !== null || (readOnlyReasonKind !== null &&
+    locked || overriding || pendingRevoke !== null || (readOnlyReasonKind !== null &&
       (readOnlyReasonKind !== "notHeld" || (PERM_BITS[permission] & offendingBits) === 0));
 
   const write = (masks: { allow: number; deny: number }) => () =>
     useTeamStore.getState().setMemberPermissions(teamId, member.user_id, masks.allow, masks.deny);
+
+  const applyMasks = async (
+    masks: { allow: number; deny: number },
+    rotate: boolean,
+    history?: HistoryEntry,
+  ) => {
+    setError("");
+    setOverriding(true);
+    try {
+      await write(masks)();
+      if (history) push(history);
+      onUpdated();
+      if (rotate) void checkAndRotateTeamKey(teamId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("members.error.failedToUpdatePermissions"));
+    } finally {
+      setOverriding(false);
+    }
+  };
+
+  const clearOverrides = async () => {
+    const cleared = { allow: 0, deny: 0 };
+    if (crossesVaultKeyGate(member, teamRoles, cleared, locked)) {
+      setPendingRevoke("clear");
+      return;
+    }
+    await applyMasks(cleared, false);
+  };
 
   const commitOverride = async (permission: Permission, next: OverrideState, rotate: boolean) => {
     const updated = applyOverrideState(permission, allow, deny, next);
@@ -181,24 +212,13 @@ export function MemberDetailPanel({
       const masks = applyOverrideState(permission, m.permission_allow ?? 0, m.permission_deny ?? 0, state);
       return useTeamStore.getState().setMemberPermissions(teamId, member.user_id, masks.allow, masks.deny);
     };
-    setError("");
-    setOverriding(true);
-    try {
-      // No toast here: a bit flip already gets its own inline row feedback,
-      // and a toast per click was noisy against runReversible's other callers.
-      await write(updated)();
-      push({
-        label: t("members.history.changePermissions", { name: member.handle }),
-        undo: at(overrideStateOf(permission, allow, deny)),
-        redo: at(next),
-      });
-      onUpdated();
-      if (rotate) void checkAndRotateTeamKey(teamId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("members.error.failedToUpdatePermissions"));
-    } finally {
-      setOverriding(false);
-    }
+    // No toast here: a bit flip already gets its own inline row feedback,
+    // and a toast per click was noisy against runReversible's other callers.
+    await applyMasks(updated, rotate, {
+      label: t("members.history.changePermissions", { name: member.handle }),
+      undo: at(overrideStateOf(permission, allow, deny)),
+      redo: at(next),
+    });
   };
 
   const handleOverride = async (permission: Permission, next: OverrideState) => {
@@ -207,7 +227,7 @@ export function MemberDetailPanel({
       return;
     }
     const updated = applyOverrideState(permission, allow, deny, next);
-    if (crossesVaultKeyGate(member, teamRoles, updated)) {
+    if (crossesVaultKeyGate(member, teamRoles, updated, locked)) {
       setPendingRevoke({ permission, next });
       return;
     }
@@ -243,6 +263,7 @@ export function MemberDetailPanel({
                 .sort((a, b) => a.position - b.position).map((role) => {
 
                 const hasRole = member.role_ids.includes(role.id);
+                const lockedOut = locked && !role.is_builtin && !hasRole;
                 const meta = ROLE_META[role.name];
                 const color = role.color ?? meta?.color ?? "var(--t-accent)";
                 const bg = meta?.bg ?? `${color}1a`;
@@ -250,7 +271,8 @@ export function MemberDetailPanel({
                   <div key={role.id} className="flex flex-col gap-1">
                   <button
                     onClick={() => void handleToggleRole(role)}
-                    disabled={toggling === role.id}
+                    disabled={toggling === role.id || lockedOut}
+                    title={lockedOut ? t("shared.businessLock.title") : undefined}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
                     style={{
                       background: justToggled === role.id ? "rgba(52,211,153,0.15)" : hasRole ? bg : "var(--t-bg-elevated)",
@@ -278,6 +300,7 @@ export function MemberDetailPanel({
                   </div>
                 );
               })}
+              {!locked && (
               <button
                 onClick={() => setCreatingRole(true)}
                 className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
@@ -288,6 +311,7 @@ export function MemberDetailPanel({
                 <Icon icon="lucide:plus" width={10} />
                 {t("members.newRole")}
               </button>
+              )}
             </div>
           ) : (
             <RoleBadges member={member} roles={teamRoles} />
@@ -297,52 +321,64 @@ export function MemberDetailPanel({
         {/* Permissions */}
         {serverSupportsOverrides && (
         <FormSection label={t("members.permissions.title")}>
-          {readOnlyReason && (
-            <p className="text-[10px] text-(--t-text-dim) mb-1">{readOnlyReason}</p>
-          )}
-          {editablePermissions.length > 6 && (
-            <div className="relative mb-2">
-              <Icon icon="lucide:search" width={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--t-text-dim)" }} />
-              <input
-                value={permissionFilter}
-                onChange={(e) => setPermissionFilter(e.target.value)}
-                placeholder={t("members.permissions.filterPlaceholder")}
-                className="w-full pl-8 pr-7 py-1.5 rounded-lg outline-hidden bg-(--t-bg-input) border border-(--t-border-hover) text-(--t-text-primary)"
-                style={{ fontSize: 12 }}
-              />
-              {permissionFilter && (
-                <button onClick={() => setPermissionFilter("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 transition-opacity hover:opacity-70">
-                  <Icon icon="lucide:x" width={12} style={{ color: "var(--t-text-dim)" }} />
-                </button>
-              )}
-            </div>
-          )}
-          {filteredGroups.length === 0 && (
-            <p className="text-xs text-(--t-text-dim) px-1 py-2">{t("common.state.noResults")}</p>
-          )}
-          <div className="space-y-4">
-            {filteredGroups.map((g) => (
-              <div key={g.key}>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-(--t-text-dim) opacity-70 mb-0.5">
-                  {t(`members.permissions.group.${g.key}`)}
-                </p>
-                {g.permissions.map((permission) => {
-                  const granting = rolesGranting(permission);
-                  return (
-                    <PermissionOverrideRow
-                      key={permission}
-                      permission={permission}
-                      state={overrideStateOf(permission, allow, deny)}
-                      inheritedFrom={granting}
-                      inheritedGrants={granting.length > 0}
-                      disabled={rowDisabled(permission)}
-                      onChange={(next) => void handleOverride(permission, next)}
-                    />
-                  );
-                })}
+          {locked && (allow | deny) === 0 ? (
+            <BusinessLockLine teamId={teamId} label={t("shared.businessLock.memberLine")} />
+          ) : (
+            <>
+            <BusinessLapseNotice
+              teamId={teamId}
+              message={t("shared.businessLock.memberLapsed", { name: member.handle ?? "?" })}
+              removeLabel={t("shared.businessLock.removeOverrides")}
+              onRemove={(allow | deny) !== 0 && readOnlyReasonKind === null ? clearOverrides : undefined}
+            />
+            {readOnlyReason && (
+              <p className="text-[10px] text-(--t-text-dim) mb-1">{readOnlyReason}</p>
+            )}
+            {editablePermissions.length > 6 && (
+              <div className="relative mb-2">
+                <Icon icon="lucide:search" width={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--t-text-dim)" }} />
+                <input
+                  value={permissionFilter}
+                  onChange={(e) => setPermissionFilter(e.target.value)}
+                  placeholder={t("members.permissions.filterPlaceholder")}
+                  className="w-full pl-8 pr-7 py-1.5 rounded-lg outline-hidden bg-(--t-bg-input) border border-(--t-border-hover) text-(--t-text-primary)"
+                  style={{ fontSize: 12 }}
+                />
+                {permissionFilter && (
+                  <button onClick={() => setPermissionFilter("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 transition-opacity hover:opacity-70">
+                    <Icon icon="lucide:x" width={12} style={{ color: "var(--t-text-dim)" }} />
+                  </button>
+                )}
               </div>
-            ))}
-          </div>
+            )}
+            {filteredGroups.length === 0 && (
+              <p className="text-xs text-(--t-text-dim) px-1 py-2">{t("common.state.noResults")}</p>
+            )}
+            <div className="space-y-4">
+              {filteredGroups.map((g) => (
+                <div key={g.key}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-(--t-text-dim) opacity-70 mb-0.5">
+                    {t(`members.permissions.group.${g.key}`)}
+                  </p>
+                  {g.permissions.map((permission) => {
+                    const granting = rolesGranting(permission);
+                    return (
+                      <PermissionOverrideRow
+                        key={permission}
+                        permission={permission}
+                        state={overrideStateOf(permission, allow, deny)}
+                        inheritedFrom={granting}
+                        inheritedGrants={granting.length > 0}
+                        disabled={rowDisabled(permission)}
+                        onChange={(next) => void handleOverride(permission, next)}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+            </>
+          )}
         </FormSection>
         )}
 
@@ -404,9 +440,10 @@ export function MemberDetailPanel({
         confirmLabel={t("members.revokeKeyAccess.confirm")}
         onCancel={() => setPendingRevoke(null)}
         onConfirm={() => {
-          const { permission, next } = pendingRevoke;
+          const pending = pendingRevoke;
           setPendingRevoke(null);
-          void commitOverride(permission, next, true);
+          if (pending === "clear") void applyMasks({ allow: 0, deny: 0 }, true);
+          else void commitOverride(pending.permission, pending.next, true);
         }}
       />
     )}

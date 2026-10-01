@@ -1,5 +1,8 @@
 import { test, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+const lock = vi.hoisted(() => ({ value: { locked: false, isOwner: true } }));
+vi.mock("@/hooks/useBusinessLock", () => ({ useBusinessLock: () => lock.value }));
+vi.mock("@/services/billingCheckout", () => ({ openBillingCheckout: vi.fn() }));
 import { PermissionsSection } from "./PermissionsSection";
 import { saveObjectRules, syncWithFolder } from "@/services/ruleSetEditing";
 import { getRuleSet } from "@/services/teamObjects";
@@ -7,7 +10,7 @@ import { ALL_PERMISSION_BITS, PERM_BITS } from "@/services/permissions";
 import { useTeamObjectAccessStore, type ObjectAccess } from "@/stores/teamObjectAccessStore";
 
 const h = vi.hoisted(() => ({
-  roles: [] as { id: string; name: string; permissions: number }[],
+  roles: [] as { id: string; name: string; permissions: number; is_builtin?: boolean }[],
 }));
 
 vi.mock("react-i18next", () => ({
@@ -47,6 +50,7 @@ const seed = (over: Partial<ObjectAccess> = {}) => useTeamObjectAccessStore.getS
 const connectRow = () => screen.findByRole("radiogroup", { name: "members.permission.CONNECT" });
 
 beforeEach(() => {
+  lock.value = { locked: false, isOwner: true };
   h.roles = [{ id: "r1", name: "sysadmin", permissions: PERM_BITS.CONNECT }];
   vi.mocked(getRuleSet).mockResolvedValue([]);
   vi.mocked(saveObjectRules).mockResolvedValue();
@@ -258,4 +262,73 @@ test("denying Connect locks View secrets and Copy secrets, which depend on it", 
   const copySecrets = screen.getByRole("radiogroup", { name: "members.permission.COPY_SECRETS" });
   expect(within(copySecrets).getByRole("radio", { name: "members.permissions.state.allow" }).hasAttribute("disabled")).toBe(true);
   expect(screen.getAllByText("shared.permissions.section.requiresConnect")).toHaveLength(2);
+});
+
+const everyoneDenyConnect = [{ subject_type: "everyone" as const, subject_id: null, allow: 0, deny: PERM_BITS.CONNECT }];
+
+test("locked + own rules: rows and add-subject disabled, Clear saves an empty set", async () => {
+  lock.value = { locked: true, isOwner: true };
+  seed({ ruleSetId: "sOwn" });
+  vi.mocked(getRuleSet).mockResolvedValue(everyoneDenyConnect);
+  render(<PermissionsSection objectId="c1" vaultId="t1" type="connection" />);
+
+  const clear = await screen.findByText("shared.businessLock.removeRules");
+  const connect = await connectRow();
+  expect((within(connect).getByRole("radio", { name: "members.permissions.state.inherit" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByText("shared.permissions.section.addSubject")).toBeNull();
+
+  fireEvent.click(clear);
+  fireEvent.click(screen.getByText("shared.businessLock.confirmClear"));
+  await waitFor(() => expect(saveObjectRules).toHaveBeenCalledWith({ teamId: "t1", objectId: "c1", type: "connection" }, []));
+});
+
+test("locked + synced with its folder: banner but no Clear", async () => {
+  lock.value = { locked: true, isOwner: true };
+  seed();
+  vi.mocked(getRuleSet).mockResolvedValue(everyoneDenyConnect);
+  render(<PermissionsSection objectId="c1" vaultId="t1" type="connection" />);
+  expect(await screen.findByText("shared.permissions.section.syncedWith Prod")).toBeTruthy();
+  expect(screen.getByText("shared.businessLock.objectLapsed")).toBeTruthy();
+  expect(screen.queryByText("shared.businessLock.removeRules")).toBeNull();
+});
+
+test("locked object with no rules shows only the one-line lock", async () => {
+  lock.value = { locked: true, isOwner: true };
+  seed({ ruleSetId: null });
+  render(<PermissionsSection objectId="c1" vaultId="t1" type="connection" />);
+  expect(await screen.findByText("shared.businessLock.objectLine")).toBeTruthy();
+  expect(screen.queryByText("shared.businessLock.objectLapsed")).toBeNull();
+  expect(screen.queryAllByRole("radio")).toHaveLength(0);
+});
+
+test("locked object whose rules are still loading shows the notice, not the one-line lock", async () => {
+  lock.value = { locked: true, isOwner: true };
+  seed({ ruleSetId: "sOwn" });
+  vi.mocked(getRuleSet).mockReturnValue(new Promise(() => {}));
+  render(<PermissionsSection objectId="c1" vaultId="t1" type="connection" />);
+  expect(await screen.findByText("shared.businessLock.objectLapsed")).toBeTruthy();
+  expect(screen.queryByText("shared.businessLock.objectLine")).toBeNull();
+});
+
+test("locked: only built-in roles are credited as sources", async () => {
+  lock.value = { locked: true, isOwner: true };
+  h.roles = [
+    { id: "r1", name: "sysadmin", permissions: PERM_BITS.CONNECT },
+    { id: "rb", name: "ops", permissions: PERM_BITS.CONNECT, is_builtin: true },
+  ];
+  seed({ ruleSetId: "sOwn" });
+  vi.mocked(getRuleSet).mockResolvedValue([{ subject_type: "everyone", subject_id: null, allow: 0, deny: PERM_BITS.VIEW_SECRETS }]);
+  render(<PermissionsSection objectId="c1" vaultId="t1" type="connection" />);
+  const text = (await connectRow()).parentElement!.textContent;
+  expect(text).toContain("members.permissions.inheritedFrom ops");
+  expect(text).not.toContain("sysadmin");
+});
+
+test("locked: Sync now still works", async () => {
+  lock.value = { locked: true, isOwner: true };
+  seed({ ruleSetId: "sOwn" });
+  vi.mocked(getRuleSet).mockResolvedValue(everyoneDenyConnect);
+  render(<PermissionsSection objectId="c1" vaultId="t1" type="connection" />);
+  fireEvent.click(await screen.findByText("shared.permissions.section.syncNow"));
+  expect(syncWithFolder).toHaveBeenCalledWith({ teamId: "t1", objectId: "c1", type: "connection" });
 });

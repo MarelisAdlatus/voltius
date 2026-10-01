@@ -4,6 +4,7 @@ const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   appFetch: vi.fn(),
   getUserPublicKey: vi.fn(),
+  listRoles: vi.fn(),
   unwrap: vi.fn(),
   getSecret: vi.fn(),
   storeSecret: vi.fn(),
@@ -12,7 +13,7 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
 vi.mock("@/services/http", () => ({ appFetch: h.appFetch }));
-vi.mock("@/services/teamService", () => ({ getUserPublicKey: h.getUserPublicKey }));
+vi.mock("@/services/teamService", () => ({ getUserPublicKey: h.getUserPublicKey, listRoles: h.listRoles }));
 vi.mock("@/services/multiplayerService", () => ({
   unwrapSessionKey: h.unwrap,
   wrapSessionKeyForUser: vi.fn(),
@@ -38,6 +39,7 @@ import { useTeamVaultStateStore } from "@/stores/teamVaultStateStore";
 import { useTeamStore } from "@/stores/teamStore";
 import { listTeamObjects } from "@/services/teamObjects";
 import { teamSecretCache } from "./teamSecretCache";
+import { PERM_BITS } from "@/services/permissions";
 
 function futureJwt(): string {
   const exp = Math.floor(Date.now() / 1000) + 3600;
@@ -58,6 +60,7 @@ beforeEach(() => {
   h.invoke.mockReset();
   h.appFetch.mockReset();
   h.getUserPublicKey.mockReset();
+  h.listRoles.mockReset();
   h.unwrap.mockReset();
   h.getSecret.mockReset();
   h.storeSecret.mockReset();
@@ -203,6 +206,47 @@ test("fetchTeamData shows an empty vault, not a revocation, when the key route 4
 
   expect(useTeamVaultStateStore.getState().statusByTeamId[teamId]).toBe("loaded");
   expect(useConnectionStore.getState().teamConnections[teamId] ?? []).toEqual([]);
+});
+
+test.each([
+  ["lost Connect to the lapse", "plan_lapsed", { role_ids: [], permission_allow: PERM_BITS.VIEW | PERM_BITS.CONNECT }],
+  ["never had Connect from Business", "loaded", { role_ids: ["b"], permission_deny: PERM_BITS.CONNECT }],
+])("a listed member on a locked team who %s gets %s on a key-route 403", async (_why, expected, masks) => {
+  const teamId = `t-lapse-${expected}`;
+  const builtin = { id: "b", team_id: teamId, name: "member", permissions: PERM_BITS.VIEW | PERM_BITS.CONNECT, is_builtin: true, position: 3, created_at: "" };
+  useTeamStore.setState({
+    teams: [{ id: teamId, owner_tier: "teams", ...masks }] as never,
+    rolesByTeam: { [teamId]: [builtin] },
+  });
+  keychain({ server_url: "https://s", jwt: futureJwt() });
+  h.appFetch.mockImplementation(async (url: string) => {
+    if (url.endsWith("/vault-key")) return res(403);
+    throw new Error(`unexpected fetch ${url}`);
+  });
+
+  await fetchTeamData(teamId);
+
+  expect(useTeamVaultStateStore.getState().statusByTeamId[teamId]).toBe(expected);
+});
+
+test.each([
+  ["fetches them and reports the lapse", "plan_lapsed", async () => [{ id: "c", team_id: "t", name: "ops", permissions: PERM_BITS.VIEW | PERM_BITS.CONNECT, is_builtin: false, position: 5, created_at: "" }]],
+  ["falls back to loaded when the fetch fails", "loaded", async () => { throw new Error("offline"); }],
+])("a lapsed member whose roles are not cached yet %s", async (_why, expected, listRoles) => {
+  const teamId = `t-roles-${expected}`;
+  h.listRoles.mockImplementation(listRoles);
+  const { [teamId]: _drop, ...rolesByTeam } = useTeamStore.getState().rolesByTeam;
+  useTeamStore.setState({ teams: [{ id: teamId, owner_tier: "teams", role_ids: ["c"] }] as never, rolesByTeam });
+  keychain({ server_url: "https://s", jwt: futureJwt() });
+  h.appFetch.mockImplementation(async (url: string) => {
+    if (url.endsWith("/vault-key")) return res(403);
+    throw new Error(`unexpected fetch ${url}`);
+  });
+
+  await fetchTeamData(teamId);
+
+  expect(h.listRoles).toHaveBeenCalledWith(teamId);
+  expect(useTeamVaultStateStore.getState().statusByTeamId[teamId]).toBe(expected);
 });
 
 test("fetchTeamData still reports a revocation when the 403'd team is no longer listed", async () => {

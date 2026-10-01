@@ -32,6 +32,7 @@ export function guestCapFor(tier: string | undefined): number {
   return tier === "business" ? 50 : tier === "teams" ? 10 : 1;
 }
 
+// Deliberately not TIER_RANK: pro must rank as free for session guest caps.
 const OWNER_TIER_RANK: Record<string, number> = { business: 2, teams: 1 };
 
 /**

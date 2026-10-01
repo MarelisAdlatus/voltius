@@ -158,6 +158,19 @@
         "roleCount_other": "{{count}} roles",
         "loadFailed": "Could not load permissions"
       }
+    },
+    "businessLock": {
+      "title": "Business plan feature",
+      "upgrade": "Upgrade to Business",
+      "ownerOnly": "Only the team owner can upgrade.",
+      "removeRules": "Remove rules",
+      "confirmClear": "Click again to remove",
+      "rolesBody": "Custom roles need the team's Business plan.",
+      "memberLapsed": "Business plan lapsed: permissions granted to {{name}} are off; restrictions still apply.",
+      "objectLapsed": "Business plan lapsed: allow rules are off; deny rules still apply.",
+      "memberLine": "Per-member permissions need Business.",
+      "objectLine": "Per-object permissions need Business.",
+      "removeOverrides": "Remove overrides"
     }
   }
 }

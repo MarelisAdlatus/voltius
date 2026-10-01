@@ -3,7 +3,7 @@ import { Icon } from "@iconify/react";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useTeamStore } from "@/stores/teamStore";
 import { getMyUserId } from "@/services/teamService";
-import { effectivePermissions, PERM_BITS } from "@/hooks/usePermission";
+import { canEditConnectionsIn } from "@/services/permissions";
 
 export function Radio({ checked, onChange, label, sub }: { checked: boolean; onChange: () => void; label: string; sub?: string }) {
   return (
@@ -55,20 +55,11 @@ export function useVaultList(writableOnly = false) {
     getMyUserId().then((id) => { if (id) setMyUserId(id); }).catch(() => {});
   }, []);
 
-  const canWrite = (vId: string): boolean => {
-    if (vId === "personal") return true;
-    const member = membersByTeam[vId]?.find((m) => m.user_id === myUserId);
-    if (!member || !myUserId) return true;
-    const roles = rolesByTeam[vId] ?? [];
-    if (roles.length === 0) return true;
-    return (effectivePermissions(member, roles) & PERM_BITS.EDIT_CONNECTIONS) !== 0;
-  };
-
   const linkedTeamIds = new Set(vaults.map(v => v.teamId).filter(Boolean));
   return [
     ...vaults.map(v => ({ id: v.teamId ?? v.id, name: v.name })),
     ...teams.filter(t => !linkedTeamIds.has(t.id)).map(t => ({ id: t.id, name: t.name })),
-  ].filter(v => !writableOnly || canWrite(v.id));
+  ].filter(v => !writableOnly || canEditConnectionsIn(v.id, myUserId, { teams, membersByTeam, rolesByTeam }));
 }
 
 export function VaultChipSelect({ selectedIds, onChange, writableOnly = false }: {

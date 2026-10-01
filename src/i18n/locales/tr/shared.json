@@ -158,6 +158,19 @@
         "roleCount_other": "{{count}} rol",
         "loadFailed": "İzinler yüklenemedi"
       }
+    },
+    "businessLock": {
+      "title": "Business planı özelliği",
+      "upgrade": "Business'a yükselt",
+      "ownerOnly": "Yalnızca ekip sahibi yükseltebilir.",
+      "removeRules": "Kuralları kaldır",
+      "confirmClear": "Kaldırmak için tekrar tıklayın",
+      "rolesBody": "Özel roller ekibin Business planını gerektirir.",
+      "memberLapsed": "Business planının süresi doldu: {{name}} için verilen izinler kapalı; kısıtlamalar geçerli olmaya devam ediyor.",
+      "objectLapsed": "Business planının süresi doldu: izin kuralları kapalı; engelleme kuralları geçerli olmaya devam ediyor.",
+      "memberLine": "Üye bazlı izinler Business planını gerektirir.",
+      "objectLine": "Nesne bazlı izinler Business planını gerektirir.",
+      "removeOverrides": "Geçersiz kılmaları kaldır"
     }
   }
 }
