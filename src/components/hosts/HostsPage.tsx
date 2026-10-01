@@ -73,6 +73,7 @@ import { cloneFolderTree, copyFolderSubtree } from "@/utils/folderCopy";
 import { moveFolderTreeToVault } from "@/utils/folderMove";
 import { copyingRulesOf } from "@/services/ruleSetIntent";
 import { unlessMoveCancelled } from "@/services/teamObjectPersistence";
+import { describeError } from "@/services/backendErrors";
 
 
 export default function HostsPage() {
@@ -414,7 +415,7 @@ export default function HostsPage() {
     try {
       await handleDuplicateInto(conn, conn.folder_id ?? null);
     } catch (err) {
-      setError(String(err));
+      setError(describeError(err, t));
     }
   };
 
@@ -438,7 +439,7 @@ export default function HostsPage() {
       const sessionIds = await connectMany(connectionIds);
       if (sessionIds.length > 0) openSessions(sessionIds);
     } catch (err) {
-      setError(String(err));
+      setError(describeError(err, t));
     }
   }, [connectMany, openSessions, setActiveNav]);
 
@@ -655,7 +656,7 @@ export default function HostsPage() {
           if (newConn) {
             await copyConnectionSecrets(conn.id, newConn.id, { copyKey: !conn.key_id });
           }
-        } catch (err) { setError(String(err)); }
+        } catch (err) { setError(describeError(err, t)); }
       },
     });
   };
@@ -792,7 +793,7 @@ export default function HostsPage() {
               await copyConnectionSecrets(conn.id, newConn.id, { copyKey: !conn.key_id });
             }
           }
-        } catch (err) { setError(String(err)); }
+        } catch (err) { setError(describeError(err, t)); }
       },
     });
   };
@@ -935,8 +936,8 @@ export default function HostsPage() {
               setShowForm(false);
               setEditingFolderId(null);
             } : undefined}
-            onOpenLocalTerminal={() => connectLocal().catch((e) => setError(String(e)))}
-            onOpenSerial={() => connectSerialEphemeral().catch((e) => setError(String(e)))}
+            onOpenLocalTerminal={() => connectLocal().catch((e) => setError(describeError(e, t)))}
+            onOpenSerial={() => connectSerialEphemeral().catch((e) => setError(describeError(e, t)))}
             onOpenImportExport={(mode, opts) => useUIStore.getState().openImportExport(mode, opts)}
             layoutMode={layoutMode}
             onLayoutModeChange={setLayoutMode}
