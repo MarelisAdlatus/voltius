@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-02
+
+### Added
+
+- Connect to a shared team host with your own identity, chosen per host ("Connect as") or as a default for the whole vault. Your pick is stored outside the host, so other members and the shared credential are unchanged. Devices on an older app keep using the host's credential until they update (#387)
+- The host picker (SFTP panes, jump hosts, snippet remote path, key export) groups hosts by vault and folder, with an "All vaults" filter; the mobile SFTP sheet gets the same tree with vault chips (#398)
+- Clear messages when a self-hosted server has registration or team invites switched off (#401)
+
+### Changed
+
+- Persistent sessions on tmux 3.2 and newer now run tmux in control mode: scrollback, drag selection with auto-scroll, Ctrl+F over history, the mouse wheel and mouse apps behave exactly like a plain SSH session. Older tmux keeps the legacy attach, with copy-mode using the theme selection colour (#379)
+- Context menus and their submenus stay inside the window
+- Plugins: backend commands that now carry error codes (SFTP and others) reject with an `Error` (`BackendError`) instead of a string (#395)
+- Self-hosted: update the server together with the app (`ghcr.io/voltiusapp/voltius-server:sha-b3a7e9d` or newer)
+
+### Fixed
+
+- Backend errors (vault, secrets, SSH connect and auth, port forwarding, SFTP) are shown in your language instead of English (#395)
+- Fast multi-megabyte output bursts no longer lose output on SSH sessions (#379)
+- Inside tmux, terminal colour queries report the real theme, so apps such as OpenCode pick the right light or dark palette on tmux 3.2+ (#280)
+- Team-vault hosts now appear in the desktop host pickers, and key export for a team key no longer shows an empty list (#398)
+- Object editors in a team vault list that vault's folders, not only personal ones (#404)
+- A new object created in a folder gets that folder's permission rules (#409)
+- Two people editing the same object's permissions no longer overwrite each other's changes (#407)
+- Moving an object now warns when the move changes per-member rules, not only role rules (#408)
+- Cancelling a move's permission warning puts the saved folder back in the editor (#411)
+- On mobile, cancelling a folder move's permission warning no longer shows an error (#410)
+
 ### Security
 
 - Updated the bundled SSH library (`russh`) to 0.63.3, picking up fixes for a malicious server opening channels the client never asked for, a memory-exhaustion flood during rekeying, and a crash on a cipher negotiated without a MAC
