@@ -1,41 +1,38 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@iconify/react";
 import { useTranslation } from "react-i18next";
-import { useIdentityStore } from "@/stores/identityStore";
 import { useUIStore } from "@/stores/uiStore";
-import { useVaultScopedItems } from "@/hooks/useVaultScopedItems";
-import IdentitySelector from "@/components/connections/IdentitySelector";
 import { formIdentifierProps } from "@/components/shared/Panel";
 import { DecisionPanel } from "./DecisionPanel";
-import type { ConnectRetryOverride } from "./types";
+import { OverlayIdentityField } from "./OverlayIdentityField";
+import { identityOverride, type SaveTarget } from "./saveTarget";
+import type { ConnectRetryOverride } from "@/types";
 
 export function UsernamePromptPanel({
   vaultId,
+  connectionId,
+  hostName,
   onSubmit,
   onCancel,
 }: {
   vaultId?: string;
+  connectionId?: string;
+  hostName?: string;
   onSubmit: (override: ConnectRetryOverride, save: boolean) => void;
   onCancel?: () => void;
 }) {
   const { t } = useTranslation();
-  const { identities, teamIdentities, loadIdentities } = useIdentityStore();
   const setActiveNav = useUIStore((s) => s.setActiveNav);
 
   const [identityId, setIdentityId] = useState<string | null>(null);
+  const [saveTarget, setSaveTarget] = useState<SaveTarget>("host");
   const [username, setUsername] = useState("");
-
-  useEffect(() => {
-    void loadIdentities();
-  }, [loadIdentities]);
-
-  const relevantIdentities = useVaultScopedItems(vaultId, identities, teamIdentities);
 
   const trimmed = username.trim();
   // An identity carries its own username (and auth), so picking one is enough.
   const hasValue = identityId ? true : !!trimmed;
 
-  const buildOverride = (): ConnectRetryOverride => (identityId ? { identityId } : { username: trimmed });
+  const buildOverride = (): ConnectRetryOverride => (identityId ? identityOverride(identityId, saveTarget) : { username: trimmed });
 
   const goToKeychain = () => {
     onCancel?.();
@@ -55,7 +52,7 @@ export function UsernamePromptPanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasValue, identityId, username, onSubmit]);
+  }, [hasValue, identityId, saveTarget, username, onSubmit]);
 
   return (
     <DecisionPanel
@@ -83,10 +80,14 @@ export function UsernamePromptPanel({
       ]}
     >
       <div className="w-full flex flex-col gap-2.5 text-left">
-        <IdentitySelector
-          value={identityId}
-          identities={relevantIdentities}
-          onChange={setIdentityId}
+        <OverlayIdentityField
+          vaultId={vaultId}
+          connectionId={connectionId}
+          hostName={hostName ?? ""}
+          identityId={identityId}
+          onIdentityChange={setIdentityId}
+          saveTarget={saveTarget}
+          onSaveTargetChange={setSaveTarget}
           onGoToKeychain={goToKeychain}
         />
 

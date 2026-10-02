@@ -67,6 +67,9 @@
       "fileSaveFailed": "Dosya kaydedilemedi: {{error}}"
     },
     "error": {
+      "identityPickUnavailable": "{{host}} için kimliğiniz kullanılamıyor",
+      "failedToListIdentityPicks": "Kimlik seçimleriniz yüklenemedi ({{status}})",
+      "failedToSaveIdentityPick": "Kimlik seçiminiz kaydedilemedi ({{status}})",
       "notConnectedToServer": "Sunucuya bağlı değil",
       "notAuthenticated": "Kimlik doğrulanmadı",
       "invalidSessionKey": "Oturum anahtarı 32 bayt olmalıdır",

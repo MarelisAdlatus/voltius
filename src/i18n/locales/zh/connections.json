@@ -86,7 +86,15 @@
         "username": "代理用户名",
         "password": "代理密码",
         "passwordSaved": "••• 已保存"
-      }
+      },
+      "connectAsHost": "主机凭据",
+      "sharedWithTeam": "与团队共享",
+      "youConnectAs": "你的连接身份",
+      "change": "更改",
+      "connectAsYours": "{{username}} · 你的，仅你可见",
+      "connectAsTeam": "{{username}} · 团队身份",
+      "connectAsAsk": "连接时会询问你",
+      "connectAsUnavailable": "你选择的身份不可用"
     },
     "distroIconPicker": {
       "title": "图标",
@@ -161,7 +169,9 @@
       "title": "身份",
       "noIdentityInline": "无身份——内联凭据",
       "badgeKey": "密钥",
-      "badgePwd": "密码"
+      "badgePwd": "密码",
+      "sharedGroup": "{{vault}} 保险库 · 共享",
+      "ownGroup": "你的身份 · 仅你可见"
     },
     "jumpHostsPanel": {
       "dragToReorderAriaLabel": "拖拽排序",
@@ -183,6 +193,14 @@
       "sectionSerialPort": "串口",
       "customBaudButton": "自定义",
       "presetBaudButton": "预设"
+    },
+    "vaultIdentity": {
+      "title": "你在 {{vault}} 的身份",
+      "subtitle": "仅你自己。队友永远看不到。",
+      "useOn": "用于没有共享凭据的 {{vault}} 主机",
+      "none": "无默认",
+      "noneHint": "没有凭据的主机会像现在一样询问你",
+      "footnote": "有共享凭据的主机保持不变。可用“以…身份连接”为单个主机覆盖。"
     }
   }
 }

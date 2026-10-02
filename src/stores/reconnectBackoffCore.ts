@@ -1,5 +1,6 @@
 import { isMissingUsernameError, isNoAuthError, isPassphraseError } from "@/components/terminal/connection-overlay/utils";
 import type { BackendErrorCode } from "@/services/backendErrors";
+import type { IdentityPickIssue } from "@/services/credentialPlan";
 import type { TerminalSession } from "@/types";
 
 /** Failures retrying cannot fix. Wrong credentials stay wrong, and retrying them
@@ -76,6 +77,7 @@ export interface StrandableSession {
   everConnected?: boolean;
   errorMessage?: string;
   errorCode?: BackendErrorCode;
+  identityPick?: IdentityPickIssue;
 }
 
 /** An ssh tab showing a failure the network returning can fix. */
@@ -83,9 +85,17 @@ export function strandedByNetwork(s: StrandableSession): boolean {
   return (
     s.type === "ssh" &&
     s.status === "error" &&
+    !s.identityPick &&
     !isSessionEnded(s.errorMessage) &&
     !stopsRetrying(s.errorMessage, s.errorCode)
   );
+}
+
+export interface ReconnectAttemptResult {
+  ok: boolean;
+  errorMessage?: string;
+  errorCode?: BackendErrorCode;
+  identityPick?: IdentityPickIssue;
 }
 
 export interface BackoffStore {
@@ -95,11 +105,11 @@ export interface BackoffStore {
    * so the overlay shows the normal connection steps (TCP step spinning). */
   markReconnecting(sessionId: string): void;
   markConnected(sessionId: string): void;
-  markError(sessionId: string, message: string, code?: BackendErrorCode): void;
+  markError(sessionId: string, message: string, code?: BackendErrorCode, identityPick?: IdentityPickIssue): void;
   setWait(sessionId: string, wait: ReconnectWait | undefined): void;
   online(sessionId: string): boolean;
   /** Silent connect attempt: mutates no visible status, returns the outcome. */
-  attempt(sessionId: string): Promise<{ ok: boolean; errorMessage?: string; errorCode?: BackendErrorCode }>;
+  attempt(sessionId: string): Promise<ReconnectAttemptResult>;
   /** The multiplexer session is gone on the host (attach-only probe failed):
    * tear the session down — retrying can never succeed. */
   sessionEnded(sessionId: string): void;
@@ -176,7 +186,7 @@ export async function runBackoff(
       continue;
     }
 
-    const { ok, errorMessage, errorCode } = await store.attempt(sessionId);
+    const { ok, errorMessage, errorCode, identityPick } = await store.attempt(sessionId);
     if (superseded()) return false;
     if (!store.exists(sessionId)) return false;
     if (ok) {
@@ -190,8 +200,8 @@ export async function runBackoff(
     }
     // Nothing a retry can fix. The code must travel with the message, or the overlay
     // falls back to the generic panel.
-    if (stopsRetrying(errorMessage, errorCode)) {
-      store.markError(sessionId, errorMessage ?? "Authentication required", errorCode);
+    if (identityPick || stopsRetrying(errorMessage, errorCode)) {
+      store.markError(sessionId, errorMessage ?? "Authentication required", errorCode, identityPick);
       return false;
     }
     // Transient failure (host unreachable, refused): stay reconnecting, retry.

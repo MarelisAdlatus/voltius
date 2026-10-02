@@ -26,6 +26,8 @@ import { PinButton } from "@/components/shared/PinButton";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { buildConnectionMenuItems } from "@/utils/connectionMenuItems";
 import { useCanConnect } from "@/hooks/useCanConnect";
+import { useConnectAsMenuItem } from "@/hooks/useConnectAsMenuItem";
+import { NO_CONNECTION, useCredentialPlan } from "@/hooks/useCredentialPlan";
 import { VaultPicker } from "@/components/shared/VaultPicker";
 import { Toggle } from "@/components/shared/Toggle";
 import { FormSelect } from "@/components/shared/FormSelect";
@@ -48,6 +50,7 @@ import {
   formLabelStyle,
   formIdentifierProps,
 } from "@/components/shared/Panel";
+import { YouConnectAsRow } from "./YouConnectAsRow";
 import { SecretInput, TagsAndFolderFields } from "@/components/shared/vaultObjectForm";
 import { normalizeNotes } from "@/components/notes/notesText";
 import {
@@ -377,6 +380,9 @@ const ConnectionFormEditor = forwardRef<ConnectionFormHandle, Props & EditAccess
   }, [applyDetectedDistro, host, identityId, keyId, initial, legacyAlgorithms, passphrase, password, port, privateKey, proxyOverride, proxyPassword, selectedIdentity, username]);
 
   const canConnect = useCanConnect({ id: initial?.id ?? "", vault_id: initial?.vault_id ?? "" });
+  const credential = useCredentialPlan(initial ?? NO_CONNECTION);
+  const isTeamHost = !!initial && !!credential.teamId;
+  const connectAs = useConnectAsMenuItem(initial, credential, () => onConnect?.());
   const panelItems = initial ? buildConnectionMenuItems({
     t,
     canEdit: !readOnly,
@@ -385,6 +391,7 @@ const ConnectionFormEditor = forwardRef<ConnectionFormHandle, Props & EditAccess
     isSynced,
     pingDisabled,
     onConnect: canConnect ? () => onConnect?.() : undefined,
+    connectAs,
     onDuplicate: () => onDuplicate?.(),
     onMoveToVault,
     onCopyToVault,
@@ -592,7 +599,7 @@ const ConnectionFormEditor = forwardRef<ConnectionFormHandle, Props & EditAccess
           <FormSection label={isFtp ? t("connections.form.sectionCredentials") : t("connections.form.sectionIdentity")}>
             {!isFtp && (
             <div>
-              <label className={formLabelClass} style={formLabelStyle}>{t("connections.form.keychainIdentity")}</label>
+              <label className={formLabelClass} style={formLabelStyle}>{t("connections.form.keychainIdentity")}{isTeamHost && <span className="font-normal text-(--t-text-dim)"> · {t("connections.form.sharedWithTeam")}</span>}</label>
               <IdentitySelector
                 value={identityId}
                 identities={relevantIdentities}
@@ -708,6 +715,8 @@ const ConnectionFormEditor = forwardRef<ConnectionFormHandle, Props & EditAccess
                 </div>
               </div>
             )}
+
+            {initial && !isFtp && <YouConnectAsRow connection={initial} credential={credential} />}
           </FormSection>
           </ReadOnlyFields>
 

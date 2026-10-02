@@ -1,20 +1,6 @@
 import { create } from "zustand";
 import i18n from "@/i18n";
-import type { Connection, TerminalSession, SerialConnectParams, SerialLine } from "@/types";
-
-/**
- * Auth/username supplied through the connection overlay when a host is missing
- * credentials. Mirrors the connection form's choices: an existing identity, an
- * existing key, or inline password / private key material.
- */
-export interface ConnectRetryOverride {
-  username?: string;
-  identityId?: string | null;
-  keyId?: string | null;
-  password?: string;
-  privateKey?: string;
-  passphrase?: string;
-}
+import type { Connection, ConnectRetryOverride, IdentitySaveAs, TerminalSession, SerialConnectParams, SerialLine } from "@/types";
 import { sshConnect, sshDisconnect, sshDisconnectForReconnect, sshDetectDistro, sshSendInput } from "@/services/ssh";
 import { resolveKeepalive } from "@/utils/keepalive";
 import { normalizeTabTitle } from "@/utils/sessionLabel";
@@ -22,12 +8,17 @@ import { getGlobalKeepalivePreset, resolvePersistSession } from "@/stores/connec
 import { localConnect, localDisconnect } from "@/services/local";
 import { serialConnect, serialDisconnect, serialSetLine } from "@/services/serial";
 import { resolveConnectionCredentials, resolveJumpHosts } from "@/services/credentials";
+import { identityCredentials, type ResolvedCredentials } from "@/services/credentialLogic";
+import { connectionAuditMetadata } from "@/services/connectionAuditMetadata";
 import { resolveFirstHopProxy, type ProxySpec } from "@/services/proxy";
 import { setEphemeralCredentials, clearEphemeralCredentials } from "@/services/ephemeralCredentials";
 import { storeSecret, getSecret } from "@/services/vault";
+import { identityPickIssueOf, type IdentityPickIssue } from "@/services/credentialPlan";
 import { backendErrorCode, describeError, type BackendErrorCode } from "@/services/backendErrors";
 import { keepCachedOnUploadFailure } from "@/services/secretRouting";
-import { useIdentityStore } from "@/stores/identityStore";
+import { useIdentityPickStore } from "@/stores/identityPickStore";
+import { findLoadedIdentity, isOwnLoadedIdentity } from "@/services/loadedIdentities";
+import { resolveTeamIdForVaultId } from "@/services/teamVaultSecrets";
 import { auditContextForVaultId } from "@/services/auditContextResolver";
 import { reportAuditClientEvent, type ClientAuditAction } from "@/services/auditReporter";
 import { useConnectionStore, connectionToFormData } from "./connectionStore";
@@ -40,9 +31,10 @@ import { useTerminalCwdStore } from "./terminalCwdStore";
 import { usePanelSftpStore } from "./panelSftpStore";
 import { formatLocalShellTitle } from "@/utils/localShellTitle";
 import { encodeTerminalInput } from "@/utils/terminalEncoding";
-import { cancelBackoff, isSessionEnded, type ReconnectWait } from "./reconnectBackoffCore";
+import { cancelBackoff, isSessionEnded, type ReconnectAttemptResult, type ReconnectWait } from "./reconnectBackoffCore";
 import { inlineCommandForBackend, resolveHostCommand } from "@/services/hostCommand";
 import { runHostCommand } from "@/services/hostCommandRun";
+import { notifyError } from "@/utils/notifyError";
 
 /** `background: true` opens the session without taking the user's active tab. */
 export type OpenOptions = { background?: boolean };
@@ -74,16 +66,16 @@ interface SessionStore {
   markConnecting: (sessionId: string) => void;
   setReconnectWait: (sessionId: string, wait: ReconnectWait | undefined) => void;
   removeSession: (sessionId: string) => void;
-  reconnect: (sessionId: string, options?: { restore?: boolean }) => Promise<void>;
+  reconnect: (sessionId: string, options?: { restore?: boolean; skipIdentityPick?: boolean }) => Promise<void>;
   /** Silent reconnect for the auto-backoff loop: performs the same connect as
    * reconnect() but mutates no visible status, returning the outcome so the loop
    * can hold a single steady "reconnecting" state and decide what to surface. */
-  reconnectAttempt: (sessionId: string, options?: { restore?: boolean }) => Promise<{ ok: boolean; errorMessage?: string; errorCode?: BackendErrorCode }>;
+  reconnectAttempt: (sessionId: string, options?: { restore?: boolean }) => Promise<ReconnectAttemptResult>;
   reconnectWithPassphrase: (sessionId: string, passphrase: string, save: boolean) => Promise<void>;
   retryConnect: (sessionId: string, override: ConnectRetryOverride, save: boolean) => Promise<void>;
   restoreSessions: (sessions: TerminalSession[], activeSessionId: string | null) => void;
   markConnected: (sessionId: string) => void;
-  markError: (sessionId: string, message: string, code?: BackendErrorCode) => void;
+  markError: (sessionId: string, message: string, code?: BackendErrorCode, identityPick?: IdentityPickIssue) => void;
   /** Name a tab. A blank name clears it, so the tab falls back to the connection. */
   renameSession: (sessionId: string, title: string | null) => void;
 }
@@ -116,12 +108,18 @@ export function connectionForSession(session: TerminalSession): Connection | und
   return session.connectionId ? findConnection(session.connectionId) : undefined;
 }
 
-function reportConnectionAudit(connection: Connection, action: ClientAuditAction): void {
-  reportAuditClientEvent(auditContextForVaultId(connection.vault_id), action, {
+function reportConnectionAudit(connection: Connection, action: ClientAuditAction, creds?: ResolvedCredentials): void {
+  const context = auditContextForVaultId(connection.vault_id);
+  const target = {
+    occurred_at: new Date().toISOString(),
     target_type: "connection",
     target_id: connection.id,
     target_name: connection.name?.trim() || `${connection.username}@${connection.host}:${connection.port}`,
-  });
+  };
+  const teamCreds = resolveTeamIdForVaultId(connection.vault_id) ? creds : undefined;
+  void connectionAuditMetadata(teamCreds, isOwnLoadedIdentity).then((metadata) =>
+    reportAuditClientEvent(context, action, metadata ? { ...target, metadata } : target),
+  ).catch(() => {});
 }
 
 async function buildSshConnectOptions(
@@ -188,12 +186,9 @@ async function startSession(
   set: SessionSetter,
   connection: Connection,
   sessionId: string,
-  password?: string,
-  privateKey?: string,
-  passphrase?: string,
 ) {
   createSshSession(set, connection, sessionId);
-  await connectSshSession(set, connection, sessionId, password, privateKey, passphrase);
+  await connectSshSession(set, connection, sessionId, { username: connection.username });
 }
 
 function createSshSession(
@@ -262,11 +257,10 @@ async function connectSshSession(
   set: SessionSetter,
   connection: Connection,
   sessionId: string,
-  password?: string,
-  privateKey?: string,
-  passphrase?: string,
+  credentials: ResolvedCredentials,
   initialCwd?: string,
 ) {
+  const { password, privateKey, passphrase } = credentials;
   const hasConfiguredAuth = !!connection.identity_id || !!connection.key_id;
   const preflightError = preflightConnect(connection.username, password, privateKey, hasConfiguredAuth);
   if (preflightError) {
@@ -290,14 +284,10 @@ async function connectSshSession(
         ...opts,
       }),
     );
-    set((s) => ({
-      sessions: s.sessions.map((sess) =>
-        sess.id === sessionId ? { ...sess, status: "connected" as const, everConnected: true } : sess,
-      ),
-    }));
+    markSshConnected(set, sessionId, connection.username);
 
     useConnectionStore.getState().setLastUsed(connection.id).catch(() => {});
-    reportConnectionAudit(connection, "connection.started");
+    reportConnectionAudit(connection, "connection.started", credentials);
     void runHostCommand(connection, "pre", sessionId, "ssh");
 
     if (!connection.distro) {
@@ -375,14 +365,15 @@ function markSessionError(
   set: SessionSetter,
   sessionId: string,
   err: unknown,
-  { onlyIfConnecting = false, code }: { onlyIfConnecting?: boolean; code?: BackendErrorCode } = {},
+  { onlyIfConnecting = false, code, identityPick }: { onlyIfConnecting?: boolean; code?: BackendErrorCode; identityPick?: IdentityPickIssue } = {},
 ) {
   const msg = describeError(err, i18n.t);
   const errorCode = code ?? backendErrorCode(err) ?? undefined;
+  const pick = identityPick ?? identityPickIssueOf(err);
   set((s) => ({
     sessions: s.sessions.map((sess) =>
       sess.id === sessionId && (!onlyIfConnecting || sess.status === "connecting")
-        ? { ...sess, status: "error" as const, errorMessage: msg, errorCode }
+        ? { ...sess, status: "error" as const, errorMessage: msg, errorCode, identityPick: pick }
         : sess,
     ),
   }));
@@ -411,8 +402,13 @@ function markSessionConnecting(set: SessionSetter, sessionId: string) {
     status: "connecting",
     errorMessage: undefined,
     errorCode: undefined,
+    identityPick: undefined,
     reconnectWait: undefined,
   });
+}
+
+function markSshConnected(set: SessionSetter, sessionId: string, username: string | undefined) {
+  patchSession(set, sessionId, { status: "connected", everConnected: true, connectedUsername: username });
 }
 
 function markSessionDisconnected(set: SessionSetter, sessionId: string) {
@@ -422,49 +418,51 @@ function markSessionDisconnected(set: SessionSetter, sessionId: string) {
 // Auth/username supplied through the overlay, carried across the two-step prompt
 // flow (username first, then auth) for a single session. Cleared on success.
 const connectOverrides = new Map<string, ConnectRetryOverride>();
+const skipPickOnce = new Set<string>();
 
-function findIdentityById(id: string) {
-  const { identities, teamIdentities } = useIdentityStore.getState();
-  return [...identities, ...Object.values(teamIdentities).flat()].find((i) => i.id === id);
+function setSkipPick(set: SessionSetter, sessionId: string, on: boolean) {
+  if (on) skipPickOnce.add(sessionId);
+  else skipPickOnce.delete(sessionId);
+  patchSession(set, sessionId, { skipIdentityPick: on || undefined });
 }
 
-interface ResolvedRetryAuth {
-  username: string;
-  password?: string;
-  privateKey?: string;
-  passphrase?: string;
+function resolveSessionCredentials(connection: Connection, sessionId: string): Promise<ResolvedCredentials> {
+  return resolveConnectionCredentials(connection, { skipPick: skipPickOnce.has(sessionId) });
 }
 
-/**
- * Resolve the effective credentials for a retry, layering the overlay-supplied
- * override on top of whatever the host already has stored.
- */
-async function resolveOverrideAuth(connection: Connection, override: ConnectRetryOverride): Promise<ResolvedRetryAuth> {
-  const base = await resolveConnectionCredentials(connection);
-  let username = override.username?.trim() || base.username || connection.username;
-  let password = base.password;
-  let privateKey = base.privateKey;
-  let passphrase = base.passphrase;
+function passphraseSecretKey(connection: Connection, credentials: ResolvedCredentials): string | null {
+  if (credentials.keyId) return `key:${credentials.keyId}:passphrase`;
+  return credentials.identityId || connection.identity_id ? null : `passphrase:${connection.id}`;
+}
+
+async function resolveOverrideAuth(connection: Connection, override: ConnectRetryOverride): Promise<ResolvedCredentials> {
+  const typedHostSecret = !override.identityId && (override.keyId || override.password !== undefined || override.privateKey !== undefined || override.passphrase !== undefined);
+  const base = await resolveConnectionCredentials(connection, { skipPick: !!typedHostSecret }).catch((err) => {
+    if (identityPickIssueOf(err)) return { username: connection.username } as ResolvedCredentials;
+    throw err;
+  });
+  const username = override.username?.trim() || base.username || connection.username;
+  const tolerant = (key: string) => getSecret(key).catch(() => null);
 
   if (override.identityId) {
-    const identity = findIdentityById(override.identityId);
-    if (identity) {
-      username = identity.username;
-      password = (await getSecret(`identity:${override.identityId}:password`).catch(() => null)) ?? undefined;
-      privateKey = identity.key_id ? (await getSecret(`key:${identity.key_id}:private`).catch(() => null)) ?? undefined : undefined;
-      passphrase = identity.key_id ? (await getSecret(`key:${identity.key_id}:passphrase`).catch(() => null)) ?? undefined : undefined;
-    }
+    const identity = findLoadedIdentity(override.identityId);
+    if (identity) return identityCredentials(identity, tolerant);
   } else if (override.keyId) {
-    privateKey = (await getSecret(`key:${override.keyId}:private`).catch(() => null)) ?? undefined;
-    passphrase = (await getSecret(`key:${override.keyId}:passphrase`).catch(() => null)) ?? undefined;
-    password = undefined;
+    return {
+      username,
+      privateKey: (await tolerant(`key:${override.keyId}:private`)) ?? undefined,
+      passphrase: (await tolerant(`key:${override.keyId}:passphrase`)) ?? undefined,
+      keyId: override.keyId,
+    };
   } else if (override.password !== undefined || override.privateKey !== undefined || override.passphrase !== undefined) {
-    password = override.password || undefined;
-    privateKey = override.privateKey || undefined;
-    passphrase = override.passphrase || undefined;
+    return {
+      username,
+      password: override.password || undefined,
+      privateKey: override.privateKey || undefined,
+      passphrase: override.passphrase || undefined,
+    };
   }
-
-  return { username, password, privateKey, passphrase };
+  return { ...base, username };
 }
 
 /**
@@ -480,7 +478,7 @@ async function persistConnectAuth(connection: Connection, override: ConnectRetry
   }
 
   if (override.identityId) {
-    const identity = findIdentityById(override.identityId);
+    const identity = findLoadedIdentity(override.identityId);
     data.identity_id = override.identityId;
     data.key_id = undefined;
     data.auth_type = identity?.key_id ? "key" : "password";
@@ -560,7 +558,7 @@ function beginConnection(set: SessionSetter, connectionId: string, initialCwd?: 
   void resolveConnectionCredentials(connection)
     .then((credentials) => {
       const resolvedConnection = { ...connection, username: credentials.username };
-      return connectSshSession(set, resolvedConnection, sessionId, credentials.password, credentials.privateKey, credentials.passphrase, initialCwd);
+      return connectSshSession(set, resolvedConnection, sessionId, credentials, initialCwd);
     })
     .catch((err) => markSessionError(set, sessionId, err));
 
@@ -596,7 +594,7 @@ async function connectConnection(
   try {
     const credentials = await resolveConnectionCredentials(connection);
     const sessionConnection = { ...connection, username: credentials.username };
-    await connectSshSession(set, sessionConnection, sessionId, credentials.password, credentials.privateKey, credentials.passphrase);
+    await connectSshSession(set, sessionConnection, sessionId, credentials);
   } catch (err) {
     // connectSshSession already marks the session as "error"; if the failure
     // happened earlier (e.g. credential resolution), mark it here so the
@@ -605,6 +603,13 @@ async function connectConnection(
     if (!options.keepFailedSession) throw err;
   }
   return sessionId;
+}
+
+async function saveIdentityChoice(connection: Connection, saveAs: IdentitySaveAs, identityId: string): Promise<void> {
+  const picks = useIdentityPickStore.getState();
+  if (saveAs === "pick") return picks.setHostPick(connection.id, identityId);
+  const teamId = resolveTeamIdForVaultId(connection.vault_id);
+  if (teamId) await picks.setVaultDefault(teamId, identityId);
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
@@ -915,7 +920,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       ),
     })),
 
-  markError: (sessionId, message, code) => markSessionError(set, sessionId, message, { code }),
+  markError: (sessionId, message, code, identityPick) => markSessionError(set, sessionId, message, { code, identityPick }),
 
   reconnect: async (sessionId, options) => {
     const session = get().sessions.find((s) => s.id === sessionId);
@@ -942,11 +947,13 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }
 
     markSessionConnecting(set, sessionId);
+    setSkipPick(set, sessionId, !!options?.skipIdentityPick);
 
+    let credentials: ResolvedCredentials | undefined;
     try {
       await withSessionConnectLock(sessionId, async () => {
         await sshDisconnectForReconnect(sessionId);
-        const credentials = await resolveConnectionCredentials(connection);
+        credentials = await resolveSessionCredentials(connection, sessionId);
         const opts = await buildSshConnectOptions(connection, sessionId);
         await sshConnect({
           sessionId,
@@ -962,12 +969,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           ...opts,
         });
       });
-      set((s) => ({
-        sessions: s.sessions.map((sess) =>
-          sess.id === sessionId ? { ...sess, status: "connected" as const, everConnected: true } : sess,
-        ),
-      }));
-      reportConnectionAudit(connection, "connection.started");
+      setSkipPick(set, sessionId, false);
+      markSshConnected(set, sessionId, credentials?.username);
+      reportConnectionAudit(connection, "connection.started", credentials);
       void runHostCommand(connection, "pre", sessionId, "ssh");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -976,7 +980,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         sessionEnded(sessionId);
         return;
       }
-      markSessionError(set, sessionId, msg);
+      markSessionError(set, sessionId, identityPickIssueOf(err) ? err : msg);
     }
   },
 
@@ -995,9 +999,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const connection = findConnection(session.connectionId);
       if (!connection) return { ok: false, errorMessage: i18n.t("common.error.connectionConfigNotFound") };
       // A dropped tab's xterm buffer still holds its output: replaying history would duplicate it.
+      let credentials: ResolvedCredentials | undefined;
       await withSessionConnectLock(sessionId, async () => {
         await sshDisconnectForReconnect(sessionId);
-        const credentials = await resolveConnectionCredentials(connection);
+        credentials = await resolveConnectionCredentials(connection);
         const opts = await buildSshConnectOptions(connection, sessionId);
         await sshConnect({
           sessionId,
@@ -1013,6 +1018,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           ...opts,
         });
       });
+      setSkipPick(set, sessionId, false);
+      patchSession(set, sessionId, { connectedUsername: credentials?.username });
       void runHostCommand(connection, "pre", sessionId, "ssh");
       return { ok: true };
     } catch (err) {
@@ -1020,6 +1027,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         ok: false,
         errorMessage: describeError(err, i18n.t),
         errorCode: backendErrorCode(err) ?? undefined,
+        identityPick: identityPickIssueOf(err),
       };
     }
   },
@@ -1032,24 +1040,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
     markSessionConnecting(set, sessionId);
 
+    let credentials: ResolvedCredentials | undefined;
     try {
       await withSessionConnectLock(sessionId, async () => {
         await sshDisconnectForReconnect(sessionId);
-        const credentials = await resolveConnectionCredentials(connection);
+        credentials = await resolveSessionCredentials(connection, sessionId);
 
-        if (save) {
-          const keyId = connection.key_id ?? (() => {
-            if (!connection.identity_id) return undefined;
-            const { identities, teamIdentities } = useIdentityStore.getState();
-            const allIdentities = [...identities, ...Object.values(teamIdentities).flat()];
-            return allIdentities.find((i) => i.id === connection.identity_id)?.key_id;
-          })();
-          if (keyId) {
-            await storeSecret(`key:${keyId}:passphrase`, passphrase).catch(keepCachedOnUploadFailure("reconnectWithPassphrase"));
-          } else if (!connection.identity_id) {
-            await storeSecret(`passphrase:${connection.id}`, passphrase).catch(keepCachedOnUploadFailure("reconnectWithPassphrase"));
-          }
-        }
+        const target = save ? passphraseSecretKey(connection, credentials) : null;
+        if (target) await storeSecret(target, passphrase).catch(keepCachedOnUploadFailure("reconnectWithPassphrase"));
 
         const opts = await buildSshConnectOptions(connection, sessionId);
         await sshConnect({
@@ -1065,12 +1063,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           ...opts,
         });
       });
-      set((s) => ({
-        sessions: s.sessions.map((sess) =>
-          sess.id === sessionId ? { ...sess, status: "connected" as const, everConnected: true } : sess,
-        ),
-      }));
-      reportConnectionAudit(connection, "connection.started");
+      setSkipPick(set, sessionId, false);
+      markSshConnected(set, sessionId, credentials?.username);
+      reportConnectionAudit(connection, "connection.started", credentials && { ...credentials, passphrase });
       void runHostCommand(connection, "pre", sessionId, "ssh");
     } catch (err) {
       markSessionError(set, sessionId, err);
@@ -1082,6 +1077,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     if (!session || session.type !== "ssh") return;
     let connection = findConnection(session.connectionId);
     if (!connection) return;
+    setSkipPick(set, sessionId, false);
 
     // Carry overrides across the two-step prompt flow: a username entered first
     // must survive into the subsequent auth prompt.
@@ -1090,13 +1086,15 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     for (const [k, v] of Object.entries(override)) {
       if (v !== undefined) (merged as Record<string, unknown>)[k] = v;
     }
+    merged.saveAs = override.saveAs;
     connectOverrides.set(sessionId, merged);
 
     markSessionConnecting(set, sessionId);
 
     try {
       await sshDisconnectForReconnect(sessionId);
-      const { username, password, privateKey, passphrase } = await resolveOverrideAuth(connection, merged);
+      const resolved = await resolveOverrideAuth(connection, merged);
+      const { username, password, privateKey, passphrase } = resolved;
 
       // Still missing something — re-surface the appropriate prompt and keep the
       // accumulated overrides for the next step. Persist the username now if the
@@ -1110,7 +1108,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         return;
       }
 
-      if (save) {
+      if (save && merged.saveAs && merged.identityId) {
+        await saveIdentityChoice(connection, merged.saveAs, merged.identityId).catch(notifyError);
+      } else if (save) {
         if (ephemeralConnections.has(connection.id)) {
           // Intentionally not caught (unlike the saved-host path below): a failed
           // create must surface as a connect error rather than let the session
@@ -1155,13 +1155,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       if (ephemeralConnections.has(conn.id)) {
         setEphemeralCredentials(conn.id, { username, password, privateKey, passphrase });
       }
-      set((s) => ({
-        sessions: s.sessions.map((sess) =>
-          sess.id === sessionId ? { ...sess, status: "connected" as const, everConnected: true } : sess,
-        ),
-      }));
+      markSshConnected(set, sessionId, username);
       useConnectionStore.getState().setLastUsed(conn.id).catch(() => {});
-      reportConnectionAudit(conn, "connection.started");
+      reportConnectionAudit(conn, "connection.started", resolved);
       void runHostCommand(conn, "pre", sessionId, "ssh");
     } catch (err) {
       markSessionError(set, sessionId, err);
@@ -1178,6 +1174,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       dropEphemeralConnection(closing.connectionId);
     }
     connectOverrides.delete(sessionId);
+    skipPickOnce.delete(sessionId);
     set({
       sessions: remaining,
       activeSessionId:

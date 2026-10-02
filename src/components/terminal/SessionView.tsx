@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useSessionStore, type ConnectRetryOverride } from "@/stores/sessionStore";
+import { useSessionStore } from "@/stores/sessionStore";
 import { wakeBackoff } from "@/stores/reconnectBackoffCore";
 import { useTeamSessionStore } from "@/stores/teamSessionStore";
 import { hasInputControl } from "@/services/broadcast";
@@ -11,10 +11,11 @@ import { TerminalStatusBar } from "@/components/terminal/TerminalStatusBar";
 import { useMultiplayerHostBroadcast } from "@/hooks/useMultiplayerHostBroadcast";
 import ConnectionOverlay, { getSshSteps, getSerialSteps } from "@/components/terminal/connection-overlay";
 import { useAllConnections } from "@/hooks/useAllConnections";
+import { NO_CONNECTION, useCredentialPlan } from "@/hooks/useCredentialPlan";
 import { getConnectionIcon } from "@/utils/icons";
-import type { TerminalSession } from "@/types";
+import type { ConnectRetryOverride, TerminalSession } from "@/types";
 import { EphemeralSerialConfigOverlay } from "@/components/connections/EphemeralSerialConfigOverlay";
-import { needsConnectionOverlay } from "./sessionOverlay";
+import { needsConnectionOverlay, sshOverlaySubtitle } from "./sessionOverlay";
 
 export function HostAwareTerminalView({
   session,
@@ -89,6 +90,7 @@ function SessionConnectionOverlayPanel({ session }: { session: TerminalSession }
   const { t } = useTranslation();
   const connections = useAllConnections();
   const connection = connections.find((c) => c.id === session.connectionId);
+  const { plan } = useCredentialPlan(connection ?? NO_CONNECTION);
   const connectSerialEphemeralFinalize = useSessionStore((s) => s.connectSerialEphemeralFinalize);
   const resetSerialEphemeral = useSessionStore((s) => s.resetSerialEphemeral);
   const reconnect = useSessionStore((s) => s.reconnect);
@@ -139,7 +141,7 @@ function SessionConnectionOverlayPanel({ session }: { session: TerminalSession }
 
   const displayIcon = connection ? (connection.icon || connection.distro) : null;
   const icon = displayIcon ? (getConnectionIcon(displayIcon) ?? "lucide:monitor") : "lucide:monitor";
-  const subtitle = connection ? `${connection.username}@${connection.host}:${connection.port}` : undefined;
+  const subtitle = connection ? sshOverlaySubtitle(connection, plan, session.skipIdentityPick) : undefined;
   return (
     <ConnectionOverlay
       sessionId={session.id}
@@ -150,6 +152,7 @@ function SessionConnectionOverlayPanel({ session }: { session: TerminalSession }
       subtitle={subtitle}
       icon={icon}
       vaultId={connection?.vault_id}
+      connectionId={connection?.id}
       steps={getSshSteps()}
       stepEventName={`ssh-step-${session.id}`}
       conflictEventName={`ssh-host-key-conflict-${session.id}`}
@@ -159,6 +162,8 @@ function SessionConnectionOverlayPanel({ session }: { session: TerminalSession }
       onRetryWithPassphrase={
         session.type === "ssh" ? (passphrase, save) => void reconnectWithPassphrase(session.id, passphrase, save) : undefined
       }
+      identityPick={session.identityPick}
+      onUseHostCredential={session.type === "ssh" ? () => void reconnect(session.id, { skipIdentityPick: true }) : undefined}
       onRetryWithAuth={
         session.type === "ssh" ? (override: ConnectRetryOverride, save) => void retryConnect(session.id, override, save) : undefined
       }

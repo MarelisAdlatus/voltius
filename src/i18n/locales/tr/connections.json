@@ -86,7 +86,15 @@
         "username": "Proxy kullanıcı adı",
         "password": "Proxy parolası",
         "passwordSaved": "••• kayıtlı"
-      }
+      },
+      "connectAsHost": "Sunucu kimlik bilgisi",
+      "sharedWithTeam": "ekiple paylaşılan",
+      "youConnectAs": "Bağlandığınız kimlik",
+      "change": "Değiştir",
+      "connectAsYours": "{{username}} · sizin, yalnızca siz",
+      "connectAsTeam": "{{username}} · ekip kimliği",
+      "connectAsAsk": "Bağlanırken sorulacak",
+      "connectAsUnavailable": "Seçtiğiniz kimlik kullanılamıyor"
     },
     "distroIconPicker": {
       "title": "Simge",
@@ -161,7 +169,9 @@
       "title": "Kimlik",
       "noIdentityInline": "Kimlik yok — satır içi kimlik bilgileri",
       "badgeKey": "anahtar",
-      "badgePwd": "parola"
+      "badgePwd": "parola",
+      "sharedGroup": "{{vault}} kasası · paylaşılan",
+      "ownGroup": "Kimlikleriniz · yalnızca siz"
     },
     "jumpHostsPanel": {
       "dragToReorderAriaLabel": "Yeniden sıralamak için sürükleyin",
@@ -183,6 +193,14 @@
       "sectionSerialPort": "Seri port",
       "customBaudButton": "Özel",
       "presetBaudButton": "Hazır ayar"
+    },
+    "vaultIdentity": {
+      "title": "{{vault}} için kimliğiniz",
+      "subtitle": "Yalnızca siz. Ekip arkadaşlarınız bunu asla görmez.",
+      "useOn": "Paylaşılan kimlik bilgisi olmayan {{vault}} sunucularında kullan",
+      "none": "Varsayılan yok",
+      "noneHint": "Kimlik bilgisi olmayan sunucular şimdiki gibi size sorar",
+      "footnote": "Paylaşılan kimlik bilgisi olan sunucular onu korur. Tek bir sunucu için Farklı kimlikle bağlan'ı kullanın."
     }
   }
 }

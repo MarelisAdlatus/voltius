@@ -1,5 +1,6 @@
 import type { KeepalivePreset } from "@/utils/keepalive";
 import type { BackendErrorCode } from "@/services/backendErrors";
+import type { IdentityPickIssue } from "@/services/credentialPlan";
 
 export type AuthType = "password" | "key";
 
@@ -223,6 +224,19 @@ export type SerialLine = "dtr" | "rts";
 
 export type SerialLines = Record<SerialLine, boolean>;
 
+export type IdentitySaveAs = "pick" | "vault-default";
+
+/** Overlay-supplied auth; a field left undefined resolves from the host's stored config. */
+export interface ConnectRetryOverride {
+  username?: string;
+  identityId?: string | null;
+  keyId?: string | null;
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  saveAs?: IdentitySaveAs;
+}
+
 export interface TerminalSession {
   id: string;
   connectionId: string;
@@ -241,6 +255,9 @@ export interface TerminalSession {
   /** Set when the failure was the vault itself, so the overlay can offer to unlock
    * rather than ask for credentials. The message is translated and cannot be matched. */
   errorCode?: BackendErrorCode;
+  identityPick?: IdentityPickIssue;
+  skipIdentityPick?: boolean;
+  connectedUsername?: string;
   /** Why the auto-reconnect loop is holding off: no network, or past its fast retries. */
   reconnectWait?: "offline" | "slow";
   encoding?: string;

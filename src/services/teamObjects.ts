@@ -80,9 +80,14 @@ async function ensureOk(res: Response, messageKey: string, opts?: { ignoreStatus
   throw apiError(i18n.t(messageKey, { status: res.status }), { status: res.status });
 }
 
-async function fetchTeamApi(path: string, init: RequestInit, opts?: { passPaymentRequired?: boolean }): Promise<Response> {
+async function requireServerUrl(): Promise<string> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) throw apiError(i18n.t("common.error.notConnectedToServer"), { offline: true });
+  return serverUrl;
+}
+
+async function fetchTeamApi(path: string, init: RequestInit, opts?: { passPaymentRequired?: boolean }): Promise<Response> {
+  const serverUrl = await requireServerUrl();
 
   let jwt = await getJwt();
   if (!jwt || isJwtExpiredOrExpiring(jwt)) jwt = await tryRefreshJwt();
@@ -220,6 +225,41 @@ export async function deleteTeamObjectPref(teamId: string, objectId: string): Pr
   });
   await ensureOk(res, "common.error.failedToDeleteTeamObjectPref", { ignoreStatus: 404 });
 }
+
+export interface IdentityPicksRecord {
+  objects: { object_id: string; identity_id: string; updated_at: string }[];
+  defaults: { team_id: string; identity_id: string; updated_at: string }[];
+}
+
+async function serverOffersIdentityPicks(): Promise<boolean> {
+  const res = await appFetch(`${await requireServerUrl()}/v1/meta`, { method: "GET" });
+  await ensureOk(res, "common.error.failedToListIdentityPicks");
+  const meta: { identity_picks?: unknown } = await res.json();
+  return meta.identity_picks === true;
+}
+
+export async function listIdentityPicks(): Promise<IdentityPicksRecord | null> {
+  if (!(await serverOffersIdentityPicks())) return null;
+  const res = await fetchTeamApi("/v1/my/identity-picks", { method: "GET" });
+  await ensureOk(res, "common.error.failedToListIdentityPicks");
+  return res.json();
+}
+
+async function writeIdentityPick(path: string, identityId: string | null): Promise<void> {
+  const res = await fetchTeamApi(
+    `/v1/my/identity-picks/${path}`,
+    identityId === null
+      ? { method: "DELETE" }
+      : { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ identity_id: identityId }) },
+  );
+  await ensureOk(res, "common.error.failedToSaveIdentityPick");
+}
+
+export const setObjectPick = (objectId: string, identityId: string | null) =>
+  writeIdentityPick(`objects/${encodeURIComponent(objectId)}`, identityId);
+
+export const setTeamDefaultPick = (teamId: string, identityId: string | null) =>
+  writeIdentityPick(`teams/${teamId}`, identityId);
 
 export async function listTeamSecrets(teamId: string): Promise<TeamSecretRecord[]> {
   const res = await fetchTeamApi(`/v1/teams/${teamId}/secrets`, { method: "GET" });

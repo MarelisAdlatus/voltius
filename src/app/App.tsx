@@ -26,6 +26,7 @@ import { restoreWorkspaceOnLaunch } from "@/stores/workspaceRestore";
 import { startLiveSessionPublisher } from "@/services/liveSessionPublisher";
 import { startCrossDeviceSessions } from "@/services/crossDeviceSessions";
 import { startNetworkWatch } from "@/stores/reconnectBackoff";
+import { startIdentityPickRefresh } from "@/services/teamDataManager";
 import { startTeamInbox } from "@/services/teamInbox";
 import { startTeamVaultNames } from "@/services/teamVaultNames";
 import { startTeamDataScrub } from "@/services/teamDataScrub";
@@ -40,6 +41,7 @@ import { DeepLinkConfirmModal } from "@/components/terminal/DeepLinkConfirmModal
 import { useDeepLinkStore } from "@/stores/deepLinkStore";
 import { GlobalTransferQueue } from "@/components/filetransfer/GlobalTransferQueue";
 import { RuleSetPromptHost } from "@/components/permissions/RuleSetPromptHost";
+import { VaultIdentityDialogHost } from "@/components/connections/VaultIdentityDialog";
 import { setRuleSetMoveConfirmer } from "@/services/teamObjectPersistence";
 import { confirmRuleSetMove } from "@/services/ruleSetMoveGuard";
 
@@ -64,6 +66,7 @@ function App() {
   useEffect(() => startTeamDataScrub(), []);
   useEffect(() => startDeepLinks(), []);
   useEffect(() => startNetworkWatch(), []);
+  useEffect(() => startIdentityPickRefresh(), []);
   useEffect(() => {
     if (ready) {
       useDeepLinkStore.getState().setReady(true);
@@ -98,6 +101,7 @@ function App() {
       <EmailVerificationRequiredModal />
       <DeepLinkConfirmModal />
       <RuleSetPromptHost />
+      <VaultIdentityDialogHost />
       <GlobalTransferQueue />
 
       {/* Global snippet variable modal — triggered from OmniSearch, the

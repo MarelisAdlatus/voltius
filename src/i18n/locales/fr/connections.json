@@ -86,7 +86,15 @@
         "username": "Utilisateur du proxy",
         "password": "Mot de passe du proxy",
         "passwordSaved": "••• enregistré"
-      }
+      },
+      "connectAsHost": "Identifiant de l'hôte",
+      "sharedWithTeam": "partagée avec l'équipe",
+      "youConnectAs": "Vous vous connectez en tant que",
+      "change": "Modifier",
+      "connectAsYours": "{{username}} · la vôtre, vous seul",
+      "connectAsTeam": "{{username}} · identité d'équipe",
+      "connectAsAsk": "Il vous sera demandé à la connexion",
+      "connectAsUnavailable": "Votre identité choisie n'est pas disponible"
     },
     "distroIconPicker": {
       "title": "Icône",
@@ -161,7 +169,9 @@
       "title": "Identité",
       "noIdentityInline": "Aucune identité — identifiants en ligne",
       "badgeKey": "clé",
-      "badgePwd": "mdp"
+      "badgePwd": "mdp",
+      "sharedGroup": "Coffre {{vault}} · partagé",
+      "ownGroup": "Vos identités · vous seul"
     },
     "jumpHostsPanel": {
       "dragToReorderAriaLabel": "Glisser pour réorganiser",
@@ -183,6 +193,14 @@
       "sectionSerialPort": "Port série",
       "customBaudButton": "Personnalisé",
       "presetBaudButton": "Prédéfini"
+    },
+    "vaultIdentity": {
+      "title": "Votre identité pour {{vault}}",
+      "subtitle": "Vous seul. Vos coéquipiers ne la voient jamais.",
+      "useOn": "Utiliser sur les hôtes {{vault}} sans identifiant partagé",
+      "none": "Aucune par défaut",
+      "noneHint": "Les hôtes sans identifiant vous le demandent, comme aujourd'hui",
+      "footnote": "Les hôtes avec un identifiant partagé le conservent. Changez-le pour un hôte avec « Se connecter en tant que »."
     }
   }
 }

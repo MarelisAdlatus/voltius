@@ -2,17 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@iconify/react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { useIdentityStore } from "@/stores/identityStore";
 import { useKeyStore } from "@/stores/keyStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useVaultScopedItems } from "@/hooks/useVaultScopedItems";
 import { Pills } from "@/components/shared/Pills";
-import IdentitySelector from "@/components/connections/IdentitySelector";
 import KeySelector from "@/components/connections/KeySelector";
 import { DecisionPanel } from "./DecisionPanel";
-import type { ConnectRetryOverride } from "./types";
+import { OverlayIdentityField } from "./OverlayIdentityField";
+import { identityOverride, repairSaveTarget, type SaveTarget } from "./saveTarget";
+import type { ConnectRetryOverride } from "@/types";
 
-type AuthMode = "password" | "key" | "identity";
+export type AuthMode = "password" | "key" | "identity";
 
 function getAuthModes(t: TFunction) {
   return [
@@ -24,21 +24,29 @@ function getAuthModes(t: TFunction) {
 
 export function AuthPromptPanel({
   vaultId,
+  connectionId,
+  hostName,
+  initialMode,
+  repairVia,
   onSubmit,
   onCancel,
 }: {
   vaultId?: string;
+  connectionId?: string;
+  hostName?: string;
+  initialMode?: AuthMode;
+  repairVia?: "pick" | "default";
   onSubmit: (override: ConnectRetryOverride, save: boolean) => void;
   onCancel?: () => void;
 }) {
   const { t } = useTranslation();
-  const { identities, teamIdentities, loadIdentities } = useIdentityStore();
   const { keys, teamKeys, loadKeys } = useKeyStore();
   const setActiveNav = useUIStore((s) => s.setActiveNav);
   const authModes = useMemo(() => getAuthModes(t), [t]);
 
-  const [mode, setMode] = useState<AuthMode>("password");
+  const [mode, setMode] = useState<AuthMode>(initialMode ?? "password");
   const [identityId, setIdentityId] = useState<string | null>(null);
+  const [saveTarget, setSaveTarget] = useState<SaveTarget>(repairVia ? repairSaveTarget(repairVia) : "host");
   const [keyId, setKeyId] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [privateKey, setPrivateKey] = useState("");
@@ -47,11 +55,9 @@ export function AuthPromptPanel({
   const [showPassphrase, setShowPassphrase] = useState(false);
 
   useEffect(() => {
-    void loadIdentities();
     void loadKeys();
-  }, [loadIdentities, loadKeys]);
+  }, [loadKeys]);
 
-  const relevantIdentities = useVaultScopedItems(vaultId, identities, teamIdentities);
   const relevantKeys = useVaultScopedItems(vaultId, keys, teamKeys);
 
   const hasAuth =
@@ -60,7 +66,7 @@ export function AuthPromptPanel({
     !!identityId;
 
   const buildOverride = (): ConnectRetryOverride => {
-    if (mode === "identity") return { identityId };
+    if (mode === "identity") return identityId ? identityOverride(identityId, saveTarget) : { identityId };
     if (mode === "key") return keyId ? { keyId } : { privateKey: privateKey.trim() || undefined, passphrase: passphrase || undefined };
     return { password: password || undefined };
   };
@@ -85,7 +91,7 @@ export function AuthPromptPanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAuth, mode, identityId, keyId, password, privateKey, passphrase, onSubmit]);
+  }, [hasAuth, mode, identityId, saveTarget, keyId, password, privateKey, passphrase, onSubmit]);
 
   return (
     <DecisionPanel
@@ -113,7 +119,7 @@ export function AuthPromptPanel({
       ]}
     >
       <div className="w-full flex flex-col gap-2.5 text-left">
-        <Pills options={authModes} value={mode} onChange={setMode} />
+        {!repairVia && <Pills options={authModes} value={mode} onChange={setMode} />}
 
         {mode === "password" && (
           <div className="relative">
@@ -179,10 +185,15 @@ export function AuthPromptPanel({
         )}
 
         {mode === "identity" && (
-          <IdentitySelector
-            value={identityId}
-            identities={relevantIdentities}
-            onChange={setIdentityId}
+          <OverlayIdentityField
+            vaultId={vaultId}
+            connectionId={connectionId}
+            hostName={hostName ?? ""}
+            identityId={identityId}
+            onIdentityChange={setIdentityId}
+            saveTarget={saveTarget}
+            onSaveTargetChange={setSaveTarget}
+            repairVia={repairVia}
             onGoToKeychain={goToKeychain}
           />
         )}

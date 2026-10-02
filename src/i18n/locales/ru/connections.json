@@ -86,7 +86,15 @@
         "username": "Пользователь прокси",
         "password": "Пароль прокси",
         "passwordSaved": "••• сохранён"
-      }
+      },
+      "connectAsHost": "Учётные данные хоста",
+      "sharedWithTeam": "общая для команды",
+      "youConnectAs": "Вы подключаетесь как",
+      "change": "Изменить",
+      "connectAsYours": "{{username}} · ваша, только вы",
+      "connectAsTeam": "{{username}} · личность команды",
+      "connectAsAsk": "Будет запрошено при подключении",
+      "connectAsUnavailable": "Выбранная личность недоступна"
     },
     "distroIconPicker": {
       "title": "Значок",
@@ -161,7 +169,9 @@
       "title": "Личность",
       "noIdentityInline": "Без личности — данные указаны вручную",
       "badgeKey": "ключ",
-      "badgePwd": "пароль"
+      "badgePwd": "пароль",
+      "sharedGroup": "Хранилище {{vault}} · общее",
+      "ownGroup": "Ваши личности · только вы"
     },
     "jumpHostsPanel": {
       "dragToReorderAriaLabel": "Перетащите для изменения порядка",
@@ -183,6 +193,14 @@
       "sectionSerialPort": "Последовательный порт",
       "customBaudButton": "Свой",
       "presetBaudButton": "Стандартный"
+    },
+    "vaultIdentity": {
+      "title": "Ваша личность для {{vault}}",
+      "subtitle": "Только вы. Коллеги её не видят.",
+      "useOn": "Использовать на хостах {{vault}} без общих учётных данных",
+      "none": "Без значения по умолчанию",
+      "noneHint": "Хосты без учётных данных спрашивают вас, как сейчас",
+      "footnote": "Хосты с общими учётными данными сохраняют их. Для отдельного хоста используйте «Подключиться как»."
     }
   }
 }

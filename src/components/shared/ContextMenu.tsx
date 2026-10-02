@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@iconify/react";
 import { useUIStore } from "@/stores/uiStore";
@@ -15,6 +15,8 @@ export interface ContextMenuItem {
   children?: ContextMenuItem[];
   /** Keyboard shortcut hint displayed on the right (e.g. "Delete", "Ctrl+K") */
   shortcut?: string;
+  /** Dim text after the label, e.g. "yours" */
+  hint?: string;
 }
 
 // ── Shared item-list renderer (no positioning) ────────────────────────────────
@@ -83,9 +85,10 @@ export function MenuItemList({
               }}
             >
               {item.icon && <Icon icon={item.icon} width={16} className="shrink-0" />}
-              <span className="flex-1 text-left text-sm font-medium" style={{ color: item.danger ? "var(--t-status-error)" : "var(--t-text-primary)" }}>
+              <span className="flex-1 text-left text-sm font-medium whitespace-nowrap" style={{ color: item.danger ? "var(--t-status-error)" : "var(--t-text-primary)" }}>
                 {item.label}
               </span>
+              {item.hint && <span className="text-xs shrink-0 whitespace-nowrap text-(--t-text-dim)">{item.hint}</span>}
               {item.shortcut && !item.children && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-sm font-mono shrink-0 bg-(--t-bg-elevated) text-(--t-text-dim) border border-(--t-border)">
                   {item.shortcut}
@@ -99,24 +102,14 @@ export function MenuItemList({
         );
       })}
 
-      {/* Submenus portal to body to escape any transformed ancestor */}
       {activeSub !== null && items[activeSub.idx]?.children &&
         createPortal(
-          <div
-            // Marked so a surface that dismisses on outside-mousedown (PickerSurface)
-            // can tell a submenu of its own menu from a click elsewhere, and stacked
-            // above that surface because a flipped submenu overlaps its parent.
-            data-menu-portal=""
-            className="surface-float fixed z-10000 p-1.5 flex flex-col min-w-[12.667rem] overflow-y-auto"
-            style={{ left: activeSub.x, top: activeSub.y, maxHeight: window.innerHeight - activeSub.y - 8 }}
-            onMouseEnter={clearTimer}
-            onMouseLeave={scheduleClose}
-          >
+          <SubmenuPanel x={activeSub.x} y={activeSub.y} onMouseEnter={clearTimer} onMouseLeave={scheduleClose}>
             <MenuItemList
               items={items[activeSub.idx].children!}
               onClose={onClose}
             />
-          </div>,
+          </SubmenuPanel>,
           document.body,
         )
       }
@@ -125,6 +118,61 @@ export function MenuItemList({
 }
 
 // ── Right-click context menu (fixed, portal) ──────────────────────────────────
+
+const VIEWPORT_MARGIN = 8;
+
+export function fitWithin(start: number, size: number, limit: number): number {
+  return Math.min(start, Math.max(VIEWPORT_MARGIN, limit - size - VIEWPORT_MARGIN));
+}
+
+function useFittedStart(
+  ref: React.RefObject<HTMLElement | null>,
+  start: number,
+  axis: "width" | "height",
+  deps: unknown[],
+): number {
+  const [fitted, setFitted] = useState(start);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => setFitted(fitWithin(
+      start,
+      el.getBoundingClientRect()[axis],
+      axis === "width" ? window.innerWidth : window.innerHeight,
+    ));
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [start, axis, ref, ...deps]);
+  return fitted;
+}
+
+function SubmenuPanel({ x, y, onMouseEnter, onMouseLeave, children }: {
+  x: number;
+  y: number;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const top = useFittedStart(ref, y, "height", []);
+  return (
+    <div
+      ref={ref}
+      // PickerSurface treats this marker as inside-click; z-index keeps a flipped submenu above its parent.
+      data-menu-portal=""
+      className="surface-float fixed z-10000 p-1.5 flex flex-col min-w-[12.667rem] overflow-y-auto"
+      style={{ left: x, top, maxHeight: window.innerHeight - 2 * VIEWPORT_MARGIN }}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      {children}
+    </div>
+  );
+}
 
 interface ContextMenuProps {
   items: ContextMenuItem[];
@@ -136,6 +184,7 @@ interface ContextMenuProps {
 export function ContextMenu({ items, pos, onClose, direction = "down" }: ContextMenuProps) {
   const uiScale = useUIStore((s) => s.uiScale);
   const menuRef = useRef<HTMLDivElement>(null);
+  const left = useFittedStart(menuRef, pos.x, "width", [uiScale, items]);
 
   // Closing from window capture rather than behind a full-screen backdrop: the
   // backdrop swallowed the next right-click, so with one menu open, right-
@@ -168,7 +217,7 @@ export function ContextMenu({ items, pos, onClose, direction = "down" }: Context
       data-menu-portal=""
       className="surface-float fixed z-100 p-1.5 flex flex-col min-w-[12.667rem] overflow-y-auto"
       style={{
-        left: pos.x,
+        left,
         maxHeight,
         transform: `scale(${uiScale})`,
         ...placement,

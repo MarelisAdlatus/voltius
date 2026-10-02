@@ -2,9 +2,13 @@ import type { Connection } from "@/types";
 import { useIdentityStore } from "@/stores/identityStore";
 import { findAnyConnection } from "@/stores/connectionStore";
 import { getSecret } from "@/services/vault";
-import { resolveCredentials, type ResolvedCredentials } from "@/services/credentialLogic";
+import { identityCredentials, resolveCredentials, type ResolvedCredentials } from "@/services/credentialLogic";
+import { IdentityPickUnavailableError, planCredentials } from "@/services/credentialPlan";
+import { buildCredentialScope, connectionLabel, describePickIssue } from "@/services/credentialScope";
+import { findLoadedIdentity } from "@/services/loadedIdentities";
+import { credentialSnapshotFromStores } from "@/services/credentialSnapshot";
 import { withEphemeralCredentials } from "@/services/ephemeralCredentials";
-import { canConnect } from "@/services/permissionsFromStores";
+import { canConnect, canFromStoresAsync } from "@/services/permissionsFromStores";
 import i18n from "@/i18n";
 
 export type { ResolvedCredentials } from "@/services/credentialLogic";
@@ -25,18 +29,16 @@ export interface ResolvedJumpHost {
   passphrase?: string;
 }
 
-function getLoadedIdentities() {
-  const { identities, teamIdentities } = useIdentityStore.getState();
-  return [...identities, ...Object.values(teamIdentities).flat()];
+async function findIdentity(id: string) {
+  const loaded = findLoadedIdentity(id);
+  if (loaded) return loaded;
+  await useIdentityStore.getState().loadIdentities();
+  return findLoadedIdentity(id);
 }
 
-async function findIdentity(id: string) {
-  let identity = getLoadedIdentities().find((i) => i.id === id);
-  if (!identity) {
-    await useIdentityStore.getState().loadIdentities();
-    identity = getLoadedIdentities().find((i) => i.id === id);
-  }
-  return identity;
+function toJumpHost(host: string, port: number, creds: ResolvedCredentials, fallbackUsername = ""): ResolvedJumpHost {
+  const { password, privateKey, passphrase } = creds;
+  return { host, port, username: creds.username || fallbackUsername, password, privateKey, passphrase };
 }
 
 export const findConnection = findAnyConnection;
@@ -51,15 +53,7 @@ export async function resolveJumpHosts(conn: Connection): Promise<ResolvedJumpHo
       // and key-based auth works.
       const referenced = findConnection(jh.connection_id);
       if (referenced) {
-        const creds = await resolveConnectionCredentials(referenced);
-        return {
-          host: referenced.host,
-          port: referenced.port,
-          username: creds.username || referenced.username,
-          password: creds.password,
-          privateKey: creds.privateKey,
-          passphrase: creds.passphrase,
-        };
+        return toJumpHost(referenced.host, referenced.port, await resolveConnectionCredentials(referenced), referenced.username);
       }
 
       // Fallback: referenced connection not loaded (deleted or imported with no
@@ -69,16 +63,7 @@ export async function resolveJumpHosts(conn: Connection): Promise<ResolvedJumpHo
       }
       if (jh.identity_id) {
         const identity = await findIdentity(jh.identity_id);
-        if (identity) {
-          const pwd = (await getSecret(`identity:${jh.identity_id}:password`)) ?? undefined;
-          const pk = identity.key_id
-            ? (await getSecret(`key:${identity.key_id}:private`)) ?? undefined
-            : undefined;
-          const pass = identity.key_id
-            ? (await getSecret(`key:${identity.key_id}:passphrase`)) ?? undefined
-            : undefined;
-          return { host: jh.host, port: jh.port, username: identity.username, password: pwd, privateKey: pk, passphrase: pass };
-        }
+        if (identity) return toJumpHost(jh.host, jh.port, await identityCredentials({ ...identity, id: jh.identity_id }, getSecret));
       }
       const pwd = (await getSecret(`password:${jh.connection_id}`)) ?? undefined;
       const pk = (await getSecret(`key:${jh.connection_id}`)) ?? undefined;
@@ -92,8 +77,21 @@ export async function resolveJumpHosts(conn: Connection): Promise<ResolvedJumpHo
  * that was never stored and throws when the vault is locked or undecryptable. Callers
  * must let a VaultError reach the user rather than connect with no credentials.
  */
-export async function resolveConnectionCredentials(conn: Connection): Promise<ResolvedCredentials> {
+export async function resolveConnectionCredentials(
+  conn: Connection,
+  { skipPick = false }: { skipPick?: boolean } = {},
+): Promise<ResolvedCredentials> {
   if (!(await canConnect(conn.vault_id, conn.id))) throw new ConnectNotAllowedError();
-  const resolved = await resolveCredentials(conn, findIdentity, getSecret);
+  const snapshot = credentialSnapshotFromStores();
+  const plan = planCredentials(buildCredentialScope(conn, snapshot, await canFromStoresAsync()), { skipPick });
+  if (plan.kind === "unavailable") {
+    throw new IdentityPickUnavailableError(
+      describePickIssue(conn, plan, snapshot),
+      i18n.t("common.error.identityPickUnavailable", { host: connectionLabel(conn) }),
+    );
+  }
+  const resolved = plan.kind === "host"
+    ? await resolveCredentials(conn, findIdentity, getSecret)
+    : await identityCredentials(plan.identity, getSecret);
   return withEphemeralCredentials(conn.id, resolved);
 }

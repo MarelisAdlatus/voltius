@@ -86,7 +86,15 @@
         "username": "Proxy username",
         "password": "Proxy password",
         "passwordSaved": "••• saved"
-      }
+      },
+      "connectAsHost": "Host credential",
+      "sharedWithTeam": "shared with the team",
+      "youConnectAs": "You connect as",
+      "change": "Change",
+      "connectAsYours": "{{username}} · yours, only you",
+      "connectAsTeam": "{{username}} · team identity",
+      "connectAsAsk": "You'll be asked when you connect",
+      "connectAsUnavailable": "Your chosen identity isn't available"
     },
     "distroIconPicker": {
       "title": "Icon",
@@ -161,7 +169,9 @@
       "title": "Identity",
       "noIdentityInline": "No identity — inline credentials",
       "badgeKey": "key",
-      "badgePwd": "pwd"
+      "badgePwd": "pwd",
+      "sharedGroup": "{{vault}} vault · shared",
+      "ownGroup": "Your identities · only you"
     },
     "jumpHostsPanel": {
       "dragToReorderAriaLabel": "Drag to reorder",
@@ -183,6 +193,14 @@
       "sectionSerialPort": "Serial Port",
       "customBaudButton": "Custom",
       "presetBaudButton": "Preset"
+    },
+    "vaultIdentity": {
+      "title": "Your identity for {{vault}}",
+      "subtitle": "Only you. Teammates never see it.",
+      "useOn": "Use on {{vault}} hosts with no shared credential",
+      "none": "No default",
+      "noneHint": "Hosts without a credential ask you, as today",
+      "footnote": "Hosts with a shared credential keep it. Override one host with Connect as."
     }
   }
 }

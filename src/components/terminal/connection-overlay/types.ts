@@ -1,5 +1,6 @@
+import type { IdentityPickIssue } from "@/services/credentialPlan";
 import type { ReactNode } from "react";
-import type { KnownHost, TerminalSession } from "@/types";
+import type { ConnectRetryOverride, KnownHost, TerminalSession } from "@/types";
 import type { BackendErrorCode } from "@/services/backendErrors";
 
 export type StepStatus = "pending" | "active" | "done" | "error";
@@ -29,21 +30,6 @@ export interface HostKeyConflictEvent {
 
 export type HostKeyConflictAction = "add_new" | "replace" | "abort";
 
-/**
- * Auth/username supplied through the connection overlay when a host is missing
- * credentials. Mirrors the choices available in the connection form: an existing
- * keychain identity, an existing key, or inline password / private key material.
- * Any field left undefined is resolved from the host's stored config instead.
- */
-export interface ConnectRetryOverride {
-  username?: string;
-  identityId?: string | null;
-  keyId?: string | null;
-  password?: string;
-  privateKey?: string;
-  passphrase?: string;
-}
-
 export interface ConnectionOverlayProps {
   sessionId: string;
   status: "connecting" | "connected" | "error" | "disconnected";
@@ -55,6 +41,7 @@ export interface ConnectionOverlayProps {
   icon: string;
   /** Vault the connection belongs to — scopes the identity/key pickers shown in the auth prompt. */
   vaultId?: string;
+  connectionId?: string;
   steps: readonly StepConfig[];
   stepEventName: string;
   conflictEventName?: string;
@@ -67,6 +54,8 @@ export interface ConnectionOverlayProps {
   onRetryWithPassphrase?: (passphrase: string, save: boolean) => void;
   /** Retry the connection with auth/username supplied through the overlay. */
   onRetryWithAuth?: (override: ConnectRetryOverride, save: boolean) => void;
+  identityPick?: IdentityPickIssue;
+  onUseHostCredential?: () => void;
 }
 
 export interface DecisionPanelAction {
