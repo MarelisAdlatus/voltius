@@ -548,3 +548,78 @@ test("a new ssh host keeps its secret fields in a vault whose secrets the caller
   renderSsh();
   expect(screen.getByText("connections.common.password")).toBeTruthy();
 });
+
+test("webdav form submits the URL with the host and port it derives", async () => {
+  const { onSubmit, ref } = renderSsh({
+    initial: conn({ connection_type: "webdav", webdav_url: "https://dav.example/files/", host: "dav.example", port: 443 }),
+  });
+  fireEvent.change(screen.getByPlaceholderText("connections.form.webdavUrlPlaceholder"), {
+    target: { value: "http://nas.local:5005/dav" },
+  });
+  await act(async () => {
+    ref.current!.flush();
+  });
+  expect(onSubmit.mock.calls[onSubmit.mock.calls.length - 1][0]).toMatchObject({
+    connection_type: "webdav",
+    webdav_url: "http://nas.local:5005/dav/",
+    host: "nas.local",
+    port: 5005,
+    auth_type: "password",
+  });
+  expect(document.querySelector("[data-webdav-plaintext]")).toBeTruthy();
+  expect(screen.queryByText("connections.form.keychainIdentity")).toBeNull();
+  expect(screen.queryByPlaceholderText("connections.form.hostPlaceholder")).toBeNull();
+});
+
+test("webdav form refuses to save an unusable URL", async () => {
+  const { onSubmit, ref } = renderSsh({
+    initial: conn({ connection_type: "webdav", webdav_url: "https://dav.example/files/" }),
+  });
+  fireEvent.change(screen.getByPlaceholderText("connections.form.webdavUrlPlaceholder"), {
+    target: { value: "ftp://nas.local/" },
+  });
+  await act(async () => {
+    ref.current!.flush();
+  });
+  expect(onSubmit).not.toHaveBeenCalled();
+  expect(document.querySelector("[data-webdav-url-error]")).toBeTruthy();
+});
+
+const usernameField = () => screen.getByText("connections.common.username").parentElement!.querySelector("input")!;
+const pickProtocol = (current: string, next: string) => {
+  fireEvent.click(screen.getAllByText(`connections.form.${current}`)[0]);
+  const options = screen.getAllByText(`connections.form.${next}`);
+  fireEvent.click(options[options.length - 1]);
+};
+
+test("leaving webdav resets the port its URL derived", async () => {
+  const { onSubmit, ref } = renderSsh({
+    initial: conn({ connection_type: "webdav", webdav_url: "https://dav.example/files/", host: "dav.example", port: 443 }),
+  });
+  pickProtocol("protocolWebdav", "protocolSsh");
+  await act(async () => {
+    ref.current!.flush();
+  });
+  expect(onSubmit.mock.calls[onSubmit.mock.calls.length - 1][0]).toMatchObject({ host: "dav.example", port: 22 });
+});
+
+test("a new file-only host starts with no username", () => {
+  renderSsh({ initial: { connection_type: "ftp" } as Connection });
+  expect(usernameField().value).toBe("");
+});
+
+test("switching protocol swaps an untouched default username", () => {
+  renderSsh();
+  expect(usernameField().value).toBe("root");
+  pickProtocol("protocolSsh", "protocolWebdav");
+  expect(usernameField().value).toBe("");
+  pickProtocol("protocolWebdav", "protocolSsh");
+  expect(usernameField().value).toBe("root");
+});
+
+test("switching protocol keeps a typed username", () => {
+  renderSsh();
+  fireEvent.change(usernameField(), { target: { value: "alice" } });
+  pickProtocol("protocolSsh", "protocolFtp");
+  expect(usernameField().value).toBe("alice");
+});

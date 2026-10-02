@@ -1,8 +1,9 @@
 use crate::storage::config::{config_dir, load_known_hosts, save_known_hosts, KnownHost};
 use chrono::Utc;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
@@ -14,11 +15,51 @@ pub enum ConflictAction {
     Abort,
 }
 
-pub struct PendingConflicts(pub Mutex<HashMap<String, oneshot::Sender<ConflictAction>>>);
+#[derive(Default)]
+struct Slots {
+    waiting: HashMap<String, oneshot::Sender<ConflictAction>>,
+    aborted: VecDeque<String>,
+}
+
+const MAX_EARLY_ABORTS: usize = 32;
+const ABORTED_BY_USER: &str = "Connection aborted by user.";
+
+pub struct PendingConflicts(Mutex<Slots>);
 
 impl PendingConflicts {
     pub fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self(Mutex::new(Slots::default()))
+    }
+
+    pub async fn resolve(&self, session_id: &str, action: ConflictAction) {
+        if let Some(tx) = self.0.lock().await.waiting.remove(session_id) {
+            let _ = tx.send(action);
+        }
+    }
+
+    /// Aborts the session's prompt, or refuses it in advance if it has not been shown yet.
+    pub async fn cancel(&self, session_id: &str) {
+        let mut slots = self.0.lock().await;
+        if let Some(tx) = slots.waiting.remove(session_id) {
+            let _ = tx.send(ConflictAction::Abort);
+            return;
+        }
+        if slots.aborted.len() >= MAX_EARLY_ABORTS {
+            slots.aborted.pop_front();
+        }
+        slots.aborted.push_back(session_id.to_string());
+    }
+
+    /// None when the session was cancelled before its prompt was shown.
+    async fn wait(&self, session_id: &str) -> Option<oneshot::Receiver<ConflictAction>> {
+        let mut slots = self.0.lock().await;
+        if let Some(i) = slots.aborted.iter().position(|id| id == session_id) {
+            slots.aborted.remove(i);
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        slots.waiting.insert(session_id.to_string(), tx);
+        Some(rx)
     }
 }
 
@@ -44,7 +85,63 @@ pub struct HostKeyConflictEvent {
     pub new_fingerprint: String,
 }
 
+pub struct ConflictPrompt {
+    pub session_id: String,
+    pub pending: Arc<PendingConflicts>,
+    pub emit: Box<dyn Fn(HostKeyConflictEvent) + Send + Sync>,
+}
+
+impl ConflictPrompt {
+    pub fn via_app(
+        app: AppHandle,
+        event_prefix: &str,
+        session_id: String,
+        pending: Arc<PendingConflicts>,
+    ) -> Self {
+        let event = format!("{event_prefix}-{session_id}");
+        Self {
+            session_id,
+            pending,
+            emit: Box::new(move |payload| {
+                let _ = app.emit(&event, payload);
+            }),
+        }
+    }
+}
+
+fn changed_warning(host: &str, port: u16, stored: &[KnownHost], received: &str) -> String {
+    let stored_fps: Vec<&str> = stored.iter().map(|e| e.fingerprint.as_str()).collect();
+    format!(
+        "WARNING: Host key changed for {host}:{port}!\n\
+         Stored   : {}\n\
+         Received : {received}\n\n\
+         This may indicate a MITM attack. \
+         Remove the host from Known Hosts to reconnect.",
+        stored_fps.join(", "),
+    )
+}
+
 // ─── Store ────────────────────────────────────────────────────────────────────
+
+fn new_entry(host: &str, port: u16, fingerprint: String, vault_id: &str) -> KnownHost {
+    let now = Utc::now().to_rfc3339();
+    KnownHost {
+        id: Uuid::new_v4().to_string(),
+        host: host.to_string(),
+        port,
+        fingerprint,
+        name: None,
+        vault_id: vault_id.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        deleted_at: None,
+        clocks: HashMap::new(),
+    }
+}
+
+fn live_for(e: &KnownHost, host: &str, port: u16) -> bool {
+    e.deleted_at.is_none() && e.host == host && e.port == port
+}
 
 pub struct KnownHostsStore {
     entries: Mutex<Vec<KnownHost>>,
@@ -64,17 +161,8 @@ impl KnownHostsStore {
     pub fn pinned(keys: &[(&str, u16, &str)]) -> Self {
         let entries = keys
             .iter()
-            .map(|&(host, port, fingerprint)| KnownHost {
-                id: Uuid::new_v4().to_string(),
-                host: host.to_string(),
-                port,
-                fingerprint: fingerprint.to_string(),
-                name: None,
-                vault_id: "personal".to_string(),
-                created_at: String::new(),
-                updated_at: String::new(),
-                deleted_at: None,
-                clocks: HashMap::new(),
+            .map(|&(host, port, fingerprint)| {
+                new_entry(host, port, fingerprint.to_string(), "personal")
             })
             .collect();
         Self {
@@ -106,7 +194,6 @@ impl KnownHostsStore {
             if old_path.exists() {
                 if let Ok(data) = std::fs::read_to_string(&old_path) {
                     if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&data) {
-                        let now = Utc::now().to_rfc3339();
                         for (key, fingerprint) in map {
                             let mut parts = key.splitn(2, ':');
                             let host = parts.next().unwrap_or("").to_string();
@@ -114,18 +201,7 @@ impl KnownHostsStore {
                             if !entries.iter().any(|e| {
                                 e.host == host && e.port == port && e.fingerprint == fingerprint
                             }) {
-                                entries.push(KnownHost {
-                                    id: Uuid::new_v4().to_string(),
-                                    host,
-                                    port,
-                                    fingerprint,
-                                    name: None,
-                                    vault_id: "personal".to_string(),
-                                    created_at: now.clone(),
-                                    updated_at: now.clone(),
-                                    deleted_at: None,
-                                    clocks: HashMap::new(),
-                                });
+                                entries.push(new_entry(&host, port, fingerprint, "personal"));
                             }
                         }
                         save_known_hosts(&entries).ok();
@@ -143,10 +219,8 @@ impl KnownHostsStore {
     /// Check whether `fingerprint` matches any stored entry for `host:port`.
     pub async fn check(&self, host: &str, port: u16, fingerprint: &str) -> HostKeyStatus {
         let entries = self.entries.lock().await;
-        let matching: Vec<&KnownHost> = entries
-            .iter()
-            .filter(|e| e.deleted_at.is_none() && e.host == host && e.port == port)
-            .collect();
+        let matching: Vec<&KnownHost> =
+            entries.iter().filter(|e| live_for(e, host, port)).collect();
 
         if matching.is_empty() {
             return HostKeyStatus::Unknown;
@@ -159,6 +233,49 @@ impl KnownHostsStore {
         }
     }
 
+    /// Ok when `fingerprint` is trusted for host:port; a first sight is pinned silently.
+    pub async fn verify_or_prompt(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: String,
+        prompt: Option<&ConflictPrompt>,
+    ) -> Result<(), String> {
+        match self.check(host, port, &fingerprint).await {
+            HostKeyStatus::Known => Ok(()),
+            HostKeyStatus::Unknown => {
+                self.add_new(host, port, fingerprint, "personal").await;
+                Ok(())
+            }
+            HostKeyStatus::Changed { stored } => {
+                let Some(prompt) = prompt else {
+                    return Err(changed_warning(host, port, &stored, &fingerprint));
+                };
+                let Some(rx) = prompt.pending.wait(&prompt.session_id).await else {
+                    return Err(ABORTED_BY_USER.into());
+                };
+                (prompt.emit)(HostKeyConflictEvent {
+                    session_id: prompt.session_id.clone(),
+                    host: host.to_string(),
+                    port,
+                    stored_entries: stored,
+                    new_fingerprint: fingerprint.clone(),
+                });
+                match rx.await {
+                    Ok(ConflictAction::AddNew) => {
+                        self.add_new(host, port, fingerprint, "personal").await;
+                        Ok(())
+                    }
+                    Ok(ConflictAction::Replace) => {
+                        self.replace_all(host, port, fingerprint, "personal").await;
+                        Ok(())
+                    }
+                    _ => Err(ABORTED_BY_USER.into()),
+                }
+            }
+        }
+    }
+
     /// Add a new entry (TOFU or "Add as new" conflict resolution).
     pub async fn add_new(
         &self,
@@ -167,23 +284,24 @@ impl KnownHostsStore {
         fingerprint: String,
         vault_id: &str,
     ) -> KnownHost {
-        let now = Utc::now().to_rfc3339();
-        let entry = KnownHost {
-            id: Uuid::new_v4().to_string(),
-            host: host.to_string(),
-            port,
-            fingerprint,
-            name: None,
-            vault_id: vault_id.to_string(),
-            created_at: now.clone(),
-            updated_at: now,
-            deleted_at: None,
-            clocks: HashMap::new(),
-        };
+        let entry = new_entry(host, port, fingerprint, vault_id);
         let mut entries = self.entries.lock().await;
         entries.push(entry.clone());
         save_known_hosts(&entries).ok();
         entry
+    }
+
+    /// Adds `fingerprint` for host:port unless a live entry already holds it.
+    pub async fn add_once(&self, host: &str, port: u16, fingerprint: &str) {
+        let mut entries = self.entries.lock().await;
+        if entries
+            .iter()
+            .any(|e| live_for(e, host, port) && e.fingerprint == fingerprint)
+        {
+            return;
+        }
+        entries.push(new_entry(host, port, fingerprint.to_string(), "personal"));
+        save_known_hosts(&entries).ok();
     }
 
     /// Soft-delete all entries for host:port and add a new one ("Replace" resolution).
@@ -198,7 +316,7 @@ impl KnownHostsStore {
         {
             let mut entries = self.entries.lock().await;
             for e in entries.iter_mut() {
-                if e.host == host && e.port == port && e.deleted_at.is_none() {
+                if live_for(e, host, port) {
                     e.deleted_at = Some(now.clone());
                     e.updated_at = now.clone();
                 }
@@ -271,8 +389,16 @@ impl KnownHostsStore {
             .lock()
             .await
             .iter()
-            .filter(|e| e.deleted_at.is_none() && e.host == host && e.port == port)
+            .filter(|e| live_for(e, host, port))
             .cloned()
+            .collect()
+    }
+
+    pub async fn fingerprints_for(&self, host: &str, port: u16) -> Vec<String> {
+        self.entries_for(host, port)
+            .await
+            .into_iter()
+            .map(|e| e.fingerprint)
             .collect()
     }
 
@@ -393,5 +519,129 @@ mod trust_tests {
         assert_eq!(entry.fingerprint, "SHA256:new");
         assert_eq!(superseded.len(), 1);
         assert_eq!(superseded[0].fingerprint, "SHA256:old");
+    }
+}
+
+/// A prompt that answers every conflict with `action` and records what it was shown.
+#[cfg(test)]
+pub(crate) fn answering(
+    action: fn() -> ConflictAction,
+    seen: Arc<std::sync::Mutex<Vec<HostKeyConflictEvent>>>,
+) -> ConflictPrompt {
+    let pending = Arc::new(PendingConflicts::new());
+    let answer = Arc::clone(&pending);
+    ConflictPrompt {
+        session_id: "s1".into(),
+        pending,
+        emit: Box::new(move |event| {
+            let tx = answer
+                .0
+                .try_lock()
+                .unwrap()
+                .waiting
+                .remove(&event.session_id)
+                .unwrap();
+            seen.lock().unwrap().push(event);
+            let _ = tx.send(action());
+        }),
+    }
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_unknown_fingerprint_is_pinned_without_asking() {
+        let store = KnownHostsStore::new();
+        store
+            .verify_or_prompt("h", 443, "tls-sha256:aa".into(), None)
+            .await
+            .unwrap();
+        let pinned = store.entries_for("h", 443).await;
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].fingerprint, "tls-sha256:aa");
+    }
+
+    #[tokio::test]
+    async fn a_known_fingerprint_passes() {
+        let store = KnownHostsStore::pinned(&[("h", 443, "tls-sha256:aa")]);
+        store
+            .verify_or_prompt("h", 443, "tls-sha256:aa".into(), None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_changed_fingerprint_without_a_prompt_is_refused() {
+        let store = KnownHostsStore::pinned(&[("h", 443, "tls-sha256:aa")]);
+        let err = store
+            .verify_or_prompt("h", 443, "tls-sha256:bb".into(), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("changed"), "{err}");
+        assert_eq!(store.fingerprints_for("h", 443).await, ["tls-sha256:aa"]);
+    }
+
+    #[tokio::test]
+    async fn replace_supersedes_the_old_pin_after_asking() {
+        let store = KnownHostsStore::pinned(&[("h", 443, "tls-sha256:aa")]);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let prompt = answering(|| ConflictAction::Replace, Arc::clone(&seen));
+        store
+            .verify_or_prompt("h", 443, "tls-sha256:bb".into(), Some(&prompt))
+            .await
+            .unwrap();
+        assert_eq!(store.fingerprints_for("h", 443).await, ["tls-sha256:bb"]);
+        assert_eq!(seen.lock().unwrap()[0].new_fingerprint, "tls-sha256:bb");
+    }
+
+    #[tokio::test]
+    async fn abort_refuses() {
+        let store = KnownHostsStore::pinned(&[("h", 443, "tls-sha256:aa")]);
+        let prompt = answering(|| ConflictAction::Abort, Arc::default());
+        let err = store
+            .verify_or_prompt("h", 443, "tls-sha256:bb".into(), Some(&prompt))
+            .await
+            .unwrap_err();
+        assert!(err.contains("aborted"), "{err}");
+        assert_eq!(store.fingerprints_for("h", 443).await, ["tls-sha256:aa"]);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_sent_before_the_prompt_refuses_it_without_asking() {
+        let store = KnownHostsStore::pinned(&[("h", 443, "tls-sha256:aa")]);
+        let seen = Arc::default();
+        let prompt = answering(|| ConflictAction::Replace, Arc::clone(&seen));
+        prompt.pending.cancel("s1").await;
+        let err = store
+            .verify_or_prompt("h", 443, "tls-sha256:bb".into(), Some(&prompt))
+            .await
+            .unwrap_err();
+        assert!(err.contains("aborted"), "{err}");
+        assert!(seen.lock().unwrap().is_empty());
+
+        store
+            .verify_or_prompt("h", 443, "tls-sha256:bb".into(), Some(&prompt))
+            .await
+            .expect("the early cancel is used up by the first prompt");
+    }
+
+    #[tokio::test]
+    async fn an_answer_without_a_prompt_is_not_kept() {
+        let pending = PendingConflicts::new();
+        pending.resolve("s1", ConflictAction::Abort).await;
+        assert!(pending.wait("s1").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn early_cancels_beyond_the_cap_drop_the_oldest() {
+        let pending = PendingConflicts::new();
+        for i in 0..=MAX_EARLY_ABORTS {
+            pending.cancel(&i.to_string()).await;
+        }
+        assert!(pending.wait("0").await.is_some());
+        assert!(pending.wait("1").await.is_none());
+        assert!(pending.wait(&MAX_EARLY_ABORTS.to_string()).await.is_none());
     }
 }

@@ -80,6 +80,25 @@ export async function ftpConnect(params: {
   });
 }
 
+/** Standalone WebDAV connection. `interactive`: a conflict overlay listens on `connectId`. */
+export async function webdavConnect(params: {
+  connectId: string;
+  url: string;
+  username: string;
+  password?: string;
+  proxy?: ProxySpec | null;
+  interactive: boolean;
+}): Promise<string> {
+  return invoke("webdav_connect", {
+    connectId: params.connectId,
+    url: params.url,
+    username: params.username,
+    password: params.password ?? null,
+    proxy: params.proxy ?? null,
+    interactive: params.interactive,
+  });
+}
+
 export async function sftpClose(sftpId: string): Promise<void> {
   return invoke("sftp_close", { sftpId });
 }
@@ -195,6 +214,11 @@ export async function sftpDownloadDir(params: {
 
 export async function sftpCancelTransfer(transferId: string): Promise<void> {
   return invoke("sftp_cancel_transfer", { transferId });
+}
+
+/** True if the session can run commands on its host (false for FTP and WebDAV). */
+export async function sftpCanExec(sftpId: string): Promise<boolean> {
+  return invoke("sftp_can_exec", { sftpId });
 }
 
 /** True if `tar` is available on the remote host. */

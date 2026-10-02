@@ -5,7 +5,7 @@ import { invoke } from "@/lib/invoke";
 import { Icon } from "@iconify/react";
 import { useTranslation } from "react-i18next";
 import {
-  ftpConnect, sftpClose,
+  sftpClose,
   sftpUploadBatchTar, sftpDownloadBatchTar, sftpTransferBatchTar,
   sftpExists, fsExists, fsHomeDir, fsCopy, wslHomeDir,
   sftpRename, sftpDelete, fsRename, fsDelete, sftpCanonicalize,
@@ -20,8 +20,8 @@ import { joinPath } from "./moveTargetCore";
 import { useTransferQueueStore } from "@/stores/transferQueueStore";
 import { useFileClipboardStore, type FileEndpoint } from "@/stores/fileClipboardStore";
 import { buildPasteDeps, executePaste } from "./pasteService";
-import { resolveConnectionCredentials } from "@/services/credentials";
-import { sftpConnectToConnection } from "@/services/sftpTarget";
+import { connectFileBackend } from "@/services/sftpTarget";
+import { cancelKnownHostPrompt } from "@/services/knownHosts";
 import { connectErrorPhase, useConnectRetry } from "@/hooks/useConnectRetry";
 import {
   type HostChoice, type SidePhase, type FileEntry,
@@ -40,6 +40,7 @@ import { EditorTabStrip } from "./editor/EditorTabStrip";
 import { EditorTab } from "./editor/EditorTab";
 import { DiffTab } from "./editor/DiffTab";
 import { EditorDropOverlay } from "./editor/EditorDropOverlay";
+import { isFileOnlyProtocol } from "@/utils/connectionType";
 
 type Side = "left" | "right";
 
@@ -65,12 +66,17 @@ export default function SFTPPage() {
   // that is no longer current closes its own session when it lands.
   const currentConnect = useRef<Record<Side, string | null>>({ left: null, right: null });
   const shownSftp = useRef<Record<Side, string | null>>({ left: null, right: null });
+  const opening = useRef<Record<Side, string | null>>({ left: null, right: null });
 
   const releaseSide = useCallback((side: Side) => {
     currentConnect.current[side] = null;
+    const openingId = opening.current[side];
+    opening.current[side] = null;
     const sftpId = shownSftp.current[side];
     shownSftp.current[side] = null;
     if (sftpId) sftpClose(sftpId).catch(() => {});
+    // A certificate prompt nobody can answer any more would hold the connect forever.
+    if (openingId) cancelKnownHostPrompt(openingId).catch(() => {});
   }, []);
 
   useEffect(() => () => { releaseSide("left"); releaseSide("right"); }, [releaseSide]);
@@ -92,11 +98,11 @@ export default function SFTPPage() {
       if (host.kind === "local") {
         cwd = host.wslDistro ? await wslHomeDir(host.wslDistro) : await fsHomeDir();
       } else {
-        if (host.connection.connection_type === "ftp") {
-          const creds = await resolveConnectionCredentials(host.connection);
-          sftpId = await ftpConnect({ host: host.connection.host, port: host.connection.port, username: creds.username, password: creds.password, secure: !!host.connection.ftp_secure });
-        } else {
-          sftpId = await sftpConnectToConnection(host.connection, connectId);
+        opening.current[side] = connectId;
+        try {
+          sftpId = await connectFileBackend(host.connection, connectId, true);
+        } finally {
+          if (opening.current[side] === connectId) opening.current[side] = null;
         }
         if (isCurrent()) cwd = await sftpCanonicalize(sftpId, ".");
       }
@@ -391,13 +397,15 @@ export default function SFTPPage() {
 
   const { connectLocalAt, connectAt } = useSessionStore();
 
-  const makeOpenInTerminal = useCallback((host: HostChoice | null) => (path: string) => {
-    if (!host) return;
-    if (host.kind === "local") {
-      connectLocalAt(path).catch(() => {});
-    } else {
-      connectAt(host.connection.id, path).catch(() => {});
-    }
+  const makeOpenInTerminal = useCallback((host: HostChoice | null) => {
+    if (!host || (host.kind === "remote" && isFileOnlyProtocol(host.connection))) return undefined;
+    return (path: string) => {
+      if (host.kind === "local") {
+        connectLocalAt(path).catch(() => {});
+      } else {
+        connectAt(host.connection.id, path).catch(() => {});
+      }
+    };
   }, [connectLocalAt, connectAt]);
 
   const leftSelected  = leftPhase.tag  === "connected" ? leftPhase.selected  : [];

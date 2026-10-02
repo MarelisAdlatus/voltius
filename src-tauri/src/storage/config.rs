@@ -38,6 +38,7 @@ pub enum ConnectionType {
     Ssh,
     Serial,
     Ftp,
+    Webdav,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -202,6 +203,8 @@ pub struct Connection {
     /// FTP only: use explicit FTPS (AUTH TLS) instead of plain FTP.
     #[serde(default)]
     pub ftp_secure: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav_url: Option<String>,
     /// Free-form user notes for this host (reminders, maintenance windows, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
@@ -286,6 +289,8 @@ pub struct ConnectionFormData {
     pub serial_auto_reconnect: Option<bool>,
     #[serde(default)]
     pub ftp_secure: bool,
+    #[serde(default)]
+    pub webdav_url: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
 }
@@ -410,17 +415,19 @@ fn migrate_shell_integration(obj: &mut serde_json::Map<String, serde_json::Value
 /// supplies a valid enum variant instead of the record failing to deserialize
 /// (which would silently drop it). New code only ever writes valid variants.
 fn migrate_enum_fields(obj: &mut serde_json::Map<String, serde_json::Value>) {
-    if !matches!(
-        obj.get("auth_type").and_then(|v| v.as_str()),
-        Some("password") | Some("key")
-    ) {
-        obj.remove("auth_type");
-    }
-    if !matches!(
-        obj.get("connection_type").and_then(|v| v.as_str()),
-        Some("ssh") | Some("serial") | Some("ftp")
-    ) {
-        obj.remove("connection_type");
+    drop_unless_valid::<AuthType>(obj, "auth_type");
+    drop_unless_valid::<ConnectionType>(obj, "connection_type");
+}
+
+fn drop_unless_valid<T: serde::de::DeserializeOwned>(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) {
+    if obj
+        .get(key)
+        .is_some_and(|v| serde_json::from_value::<T>(v.clone()).is_err())
+    {
+        obj.remove(key);
     }
 }
 
@@ -1072,6 +1079,7 @@ mod tests {
             serial_flow_control: Some("none".into()),
             serial_auto_reconnect: Some(true),
             ftp_secure: false,
+            webdav_url: None,
             notes: Some("maintenance window: Sat".into()),
             updated_at: "2026-01-02T00:00:00Z".into(),
             deleted_at: None,
@@ -1198,6 +1206,21 @@ mod tests {
         // FTP is a valid connection_type and must survive a load round-trip.
         let ftp = migrate_enums(serde_json::json!({ "connection_type": "ftp" }));
         assert_eq!(ftp.get("connection_type").unwrap(), "ftp");
+
+        let webdav = migrate_enums(serde_json::json!({ "connection_type": "webdav" }));
+        assert_eq!(webdav.get("connection_type").unwrap(), "webdav");
+    }
+
+    #[test]
+    fn saved_webdav_connection_survives_load() {
+        let mut json = serde_json::to_value(sample_connection()).unwrap();
+        json["connection_type"] = "webdav".into();
+        json["webdav_url"] = "https://h/dav/".into();
+        let data = serde_json::to_string(&vec![json]).unwrap();
+        let loaded = parse_with_migration::<Connection>(&data).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].connection_type, ConnectionType::Webdav);
+        assert_eq!(loaded[0].webdav_url.as_deref(), Some("https://h/dav/"));
     }
 
     #[test]

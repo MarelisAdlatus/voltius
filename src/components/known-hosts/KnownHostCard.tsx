@@ -2,6 +2,7 @@ import { Icon } from "@iconify/react";
 import { useTranslation } from "react-i18next";
 import { AvatarTile } from "@/components/shared/AvatarTile";
 import { BaseCard } from "@/components/shared/BaseCard";
+import { fingerprintLabel, isTlsPin } from "@/services/knownHosts";
 import { vaultMenuItems } from "@/utils/vaultMenuItems";
 import { getShortcutHint } from "@/stores/shortcutStore";
 import type { KnownHost, VaultOption } from "@/types";
@@ -43,6 +44,12 @@ export function KnownHostCard({
   onCopyVault,
 }: KnownHostCardProps) {
   const { t } = useTranslation();
+  const tlsBadge = isTlsPin(host.fingerprint) && (
+    <span className="ml-1.5 px-1 py-px rounded text-[10px] font-semibold bg-(--t-bg-elevated) text-(--t-text-dim)" data-tls-badge>
+      {t("knownHosts.tlsBadge")}
+    </span>
+  );
+  const fingerprint = fingerprintLabel(host.fingerprint, t, truncateFingerprint);
   const contextMenuItems = [
     ...vaultMenuItems(otherVaults, canEdit, onMoveVault, onCopyVault, t),
     ...(canEdit && onDelete
@@ -77,6 +84,7 @@ export function KnownHostCard({
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-(--t-text-primary) truncate">
                 {host.name ?? `${host.host}:${host.port}`}
+                {tlsBadge}
               </p>
               {host.name && (
                 <p className="text-xs text-(--t-text-dim) truncate">
@@ -85,7 +93,7 @@ export function KnownHostCard({
               )}
             </div>
             <p className="text-xs text-(--t-text-dim) font-mono shrink-0 hidden md:block">
-              {truncateFingerprint(host.fingerprint)}
+              {fingerprint}
             </p>
           </div>
         ) : (
@@ -93,6 +101,7 @@ export function KnownHostCard({
           <>
             <p className="text-sm font-medium text-(--t-text-primary) truncate">
               {host.name ?? `${host.host}:${host.port}`}
+              {tlsBadge}
             </p>
             {host.name && (
               <p className="text-xs text-(--t-text-dim) truncate mt-0.5">
@@ -100,7 +109,7 @@ export function KnownHostCard({
               </p>
             )}
             <p className="text-xs text-(--t-text-dim) font-mono truncate mt-1">
-              {truncateFingerprint(host.fingerprint)}
+              {fingerprint}
             </p>
           </>
         )}

@@ -35,6 +35,7 @@ mod terminal_kbd;
 mod tls;
 mod updater;
 mod vault_auth;
+mod webdav;
 
 use commands::http::HttpSseStreamManager;
 use docker::stream::DockerLogStreamManager;
@@ -356,6 +357,7 @@ pub fn run() {
             commands::known_hosts::known_host_move_vault,
             commands::known_hosts::known_host_copy_vault,
             commands::known_hosts::known_host_resolve,
+            commands::known_hosts::known_host_cancel,
             commands::known_hosts::known_host_trust,
             commands::local::local_list_shells,
             commands::local::local_connect,
@@ -394,6 +396,7 @@ pub fn run() {
             commands::sftp::sftp_stat,
             commands::sftp::sftp_connect,
             commands::sftp::ftp_connect,
+            commands::sftp::webdav_connect,
             commands::sftp::sftp_open,
             commands::sftp::sftp_close,
             commands::sftp::sftp_list_dir,
@@ -416,6 +419,7 @@ pub fn run() {
             commands::sftp::sftp_download_dir_tar,
             commands::sftp::sftp_transfer_dir_tar,
             commands::sftp::sftp_tar_available,
+            commands::sftp::sftp_can_exec,
             commands::sftp::sftp_upload_batch_tar,
             commands::sftp::sftp_download_batch_tar,
             commands::downloads::download_temp_path,

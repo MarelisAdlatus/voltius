@@ -6,7 +6,8 @@ pub mod real;
 pub use backend::FileBackend;
 
 use crate::commands::sftp::RemoteShell;
-use crate::known_hosts::KnownHostsStore;
+use crate::error::AppError;
+use crate::known_hosts::{ConflictPrompt, KnownHostsStore};
 use crate::proxy::ProxySpec;
 use crate::ssh::client::{
     authenticate_handle, chain_jumps, client_config, connect_first_hop_plain, hop_detail,
@@ -85,6 +86,12 @@ impl SftpManager {
         }
     }
 
+    /// A backend with no SSH connection underneath.
+    async fn register_standalone(&self, backend: Arc<dyn FileBackend>) -> String {
+        self.register(backend, None, CancellationToken::new(), vec![])
+            .await
+    }
+
     /// Register a backend under a fresh id and return that id.
     async fn register(
         &self,
@@ -158,9 +165,21 @@ impl SftpManager {
         secure: bool,
     ) -> Result<String, String> {
         let backend = crate::ftp::connect(host, port, username, password, secure).await?;
-        Ok(self
-            .register(Arc::new(backend), None, CancellationToken::new(), vec![])
-            .await)
+        Ok(self.register_standalone(Arc::new(backend)).await)
+    }
+
+    pub async fn connect_webdav(
+        &self,
+        url: &str,
+        username: &str,
+        password: &str,
+        proxy: Option<ProxySpec>,
+        known_hosts: Arc<KnownHostsStore>,
+        prompt: Option<ConflictPrompt>,
+    ) -> Result<String, AppError> {
+        let backend =
+            crate::webdav::connect(url, username, password, proxy, known_hosts, prompt).await?;
+        Ok(self.register_standalone(Arc::new(backend)).await)
     }
 
     pub async fn connect(
@@ -316,13 +335,19 @@ impl SftpManager {
         Ok(id)
     }
 
+    async fn with_entry<T>(&self, id: &str, read: impl FnOnce(&SftpEntry) -> T) -> Option<T> {
+        self.sessions.lock().await.get(id).map(read)
+    }
+
     /// Fetch the file backend for an id.
     pub async fn backend(&self, id: &str) -> Option<Arc<dyn FileBackend>> {
-        self.sessions
-            .lock()
+        self.with_entry(id, |e| Arc::clone(&e.backend)).await
+    }
+
+    pub async fn can_exec(&self, id: &str) -> bool {
+        self.with_entry(id, |e| e.handle.is_some())
             .await
-            .get(id)
-            .map(|e| Arc::clone(&e.backend))
+            .unwrap_or(false)
     }
 
     /// Per-session cache of the remote shell tar commands are written for.
@@ -330,11 +355,7 @@ impl SftpManager {
         &self,
         id: &str,
     ) -> Option<Arc<OnceCell<Option<RemoteShell>>>> {
-        self.sessions
-            .lock()
-            .await
-            .get(id)
-            .map(|e| Arc::clone(&e.tar_shell))
+        self.with_entry(id, |e| Arc::clone(&e.tar_shell)).await
     }
 
     pub async fn close(&self, id: &str) {
