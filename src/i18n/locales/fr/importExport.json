@@ -57,7 +57,7 @@
       "importFrom": "Importer depuis",
       "importInto": "Importer vers",
       "autoExtractTitle": "Extraction automatique depuis {{label}}",
-      "autoExtractDescription": "Lit et déchiffre vos données locales {{label}} — aucun export manuel requis",
+      "autoExtractDescription": "Lit vos données locales {{label}} — aucun export manuel requis",
       "extracting": "Extraction…",
       "extractFrom": "Extraire depuis {{label}}",
       "orImportFromFile": "ou importer depuis un fichier",
@@ -180,6 +180,11 @@
         "sub": "Répertoire d'hôtes · .zhd",
         "hint": "Il se trouve dans Documents\\ZOC9 Files\\Options (Windows) ou ~/Library/Application Support/ZOC9 Files/Options (macOS). Les entrées SSH et série sont importées ; les mots de passe enregistrés ne le sont pas.",
         "placeholder": "Déposez HostDirectory.zhd ici, ou collez son contenu…"
+      },
+      "putty": {
+        "sub": ".reg ou de session",
+        "hint": "Lit les sessions enregistrées dans le registre sous Windows, ou dans ~/.putty/sessions sous Linux et macOS. Vous pouvez aussi déposer un export .reg ou coller des fichiers de session. Les sessions SSH et série, les proxys et les tunnels sont importés ; les fichiers de clé ne le sont pas.",
+        "placeholder": "Déposez un export .reg de PuTTY ici, ou collez des fichiers de session…"
       }
     },
     "menu": {

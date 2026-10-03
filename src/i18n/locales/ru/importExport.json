@@ -63,7 +63,7 @@
       "importFrom": "Импорт из",
       "importInto": "Импортировать в",
       "autoExtractTitle": "Автоматическое извлечение из {{label}}",
-      "autoExtractDescription": "Считывает и расшифровывает локальные данные {{label}} — ручной экспорт не требуется",
+      "autoExtractDescription": "Считывает локальные данные {{label}} — ручной экспорт не требуется",
       "extracting": "Извлечение…",
       "extractFrom": "Извлечь из {{label}}",
       "orImportFromFile": "или импортировать из файла",
@@ -198,6 +198,11 @@
         "sub": "Каталог хостов · .zhd",
         "hint": "Файл находится в Documents\\ZOC9 Files\\Options (Windows) или ~/Library/Application Support/ZOC9 Files/Options (macOS). Импортируются записи SSH и последовательного порта; сохранённые пароли не переносятся.",
         "placeholder": "Перетащите сюда HostDirectory.zhd или вставьте его содержимое…"
+      },
+      "putty": {
+        "sub": ".reg или сеанса",
+        "hint": "Считывает сохранённые сеансы из реестра в Windows или из ~/.putty/sessions в Linux и macOS. Можно также перетащить экспорт .reg или вставить файлы сеансов. Импортируются сеансы SSH и последовательного порта, прокси и туннели; файлы ключей не переносятся.",
+        "placeholder": "Перетащите сюда экспорт PuTTY .reg или вставьте файлы сеансов…"
       }
     },
     "menu": {

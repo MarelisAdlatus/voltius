@@ -5,6 +5,7 @@ import { connectionsFromCSV } from "./parsers/csv";
 import { connectionsFromMobaXterm, extractMobaXtermBundle } from "./parsers/mobaxterm";
 import { bundleFromTermius, extractTermiusBundle } from "./parsers/termius";
 import { bundleFromZoc } from "./parsers/zoc";
+import { bundleFromPutty, extractPuttyBundle } from "./parsers/putty";
 
 export interface Importer {
   key: string;
@@ -71,15 +72,23 @@ export const IMPORTERS: Importer[] = [
     placeholderKey: "importExport.importers.zoc.placeholder",
     parse: bundleFromZoc,
   },
+  {
+    key: "putty",
+    label: "PuTTY",
+    icon: "custom:putty",
+    subKey: "importExport.importers.putty.sub",
+    fileAccept: ".reg,.txt",
+    hintKey: "importExport.importers.putty.hint",
+    placeholderKey: "importExport.importers.putty.placeholder",
+    parse: bundleFromPutty,
+    autoExtract: extractPuttyBundle,
+  },
 ];
 
 export function parseImport(text: string): ExportBundle | "encrypted" {
   const detected = detectFormat(text.trim());
   if (detected === "voltius-encrypted") return "encrypted";
-  if (detected === "json") return fromJSON(text);
-  if (detected === "csv") return importedBundle({ connections: connectionsFromCSV(text) });
-  if (detected === "mobaxterm") return importedBundle({ connections: connectionsFromMobaXterm(text) });
-  if (detected === "termius") return bundleFromTermius(text);
-  if (detected === "zoc") return bundleFromZoc(text);
-  throw new Error(i18n.t("common.error.couldNotDetectFormat"));
+  const importer = detected && IMPORTERS.find((i) => i.key === (detected === "json" ? "voltius" : detected));
+  if (!importer) throw new Error(i18n.t("common.error.couldNotDetectFormat"));
+  return importer.parse(text);
 }
