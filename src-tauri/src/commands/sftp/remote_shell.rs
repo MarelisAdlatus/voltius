@@ -1,5 +1,7 @@
 use super::shell_quote;
-use crate::sftp::SftpManager;
+use crate::ssh::exec::{run_captured, run_captured_with_stdin};
+use russh::client::{Handle, Handler};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WinShell {
@@ -11,56 +13,94 @@ pub enum WinShell {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteShell {
     Posix,
-    /// Win32-OpenSSH; `temp` is the native `%TEMP%` the archives are staged in.
-    Windows {
-        shell: WinShell,
-        temp: String,
-    },
+    Windows { shell: WinShell },
 }
 
-const POSIX_PROBE: &str = "command -v tar >/dev/null 2>&1 && test -d /tmp; echo __TF_EXIT__:$?";
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+const POSIX_PROBE: &str = "command -v tar >/dev/null 2>&1; echo __TF_EXIT__:$?";
+const STREAM_PROBE_BYTES: &[u8] = b"voltius\n\r\n\x1a\x00\xff probe\n";
 const TEMP_MARKER: &str = "__TF_TEMP__:";
 // Each prints the marker only under its own shell; the other shells echo it literally or fail.
 const CMD_TEMP_PROBE: &str = "echo __TF_TEMP__:%TEMP%";
 const PS_TEMP_PROBE: &str = "'__TF_TEMP__:' + $env:TEMP";
 const CMD_MAX_LEN: usize = 8191;
 
-/// The host's shell if it can run tar transfers, probed once per session.
-pub async fn remote_shell(manager: &SftpManager, sftp_id: &str) -> Option<RemoteShell> {
-    let cell = manager.tar_shell_cell(sftp_id).await?;
-    cell.get_or_init(|| detect(manager, sftp_id)).await.clone()
+pub fn wrap(container: Option<&str>, cmd: &str) -> String {
+    match container {
+        Some(c) => format!(
+            "docker exec -i {} sh -c {}",
+            shell_quote(c),
+            shell_quote(cmd)
+        ),
+        None => cmd.to_string(),
+    }
 }
 
-async fn detect(manager: &SftpManager, sftp_id: &str) -> Option<RemoteShell> {
-    if manager.exec_probe(sftp_id, POSIX_PROBE).await {
+async fn output<H: Handler>(handle: &Handle<H>, cmd: &str) -> Option<String> {
+    let run = tokio::time::timeout(PROBE_TIMEOUT, run_captured(handle, cmd)).await;
+    Some(run.ok()?.ok()?.stdout_text())
+}
+
+async fn reports_success<H: Handler>(handle: &Handle<H>, cmd: &str) -> bool {
+    output(handle, cmd)
+        .await
+        .is_some_and(|out| out.contains("__TF_EXIT__:0"))
+}
+
+async fn dialect<H: Handler>(handle: &Handle<H>, container: Option<&str>) -> Option<RemoteShell> {
+    if reports_success(handle, &wrap(container, POSIX_PROBE)).await {
         return Some(RemoteShell::Posix);
+    }
+    if container.is_some() {
+        return None;
     }
     for (shell, probe) in [
         (WinShell::Cmd, CMD_TEMP_PROBE),
         (WinShell::PowerShell, PS_TEMP_PROBE),
     ] {
-        let Ok(out) = manager.exec_output(sftp_id, probe).await else {
+        let Some(out) = output(handle, probe).await else {
             continue;
         };
-        if let Some(temp) = parse_temp(&out) {
-            let found = RemoteShell::Windows { shell, temp };
-            let has_tar = manager
-                .exec_probe(sftp_id, &found.status("tar --version", None))
-                .await;
+        if is_expanded_temp(&out) {
+            let found = RemoteShell::Windows { shell };
+            let has_tar = reports_success(handle, &found.status("tar --version")).await;
             return has_tar.then_some(found);
         }
     }
     None
 }
 
-fn parse_temp(out: &str) -> Option<String> {
-    let temp = out
-        .lines()
-        .find_map(|l| l.trim().strip_prefix(TEMP_MARKER))?
-        .trim();
-    let b = temp.as_bytes();
-    let absolute = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
-    absolute.then(|| temp.trim_end_matches('\\').to_string())
+async fn streams<H: Handler>(
+    handle: &Handle<H>,
+    shell: &RemoteShell,
+    container: Option<&str>,
+) -> bool {
+    let Ok(archive) = super::local_tar::pack_bytes("probe.bin", STREAM_PROBE_BYTES) else {
+        return false;
+    };
+    let cmd = wrap(container, &shell.stream_probe());
+    let run = run_captured_with_stdin(handle, &cmd, Some(archive.as_slice()));
+    match tokio::time::timeout(PROBE_TIMEOUT, run).await {
+        Ok(Ok(out)) => out.code == Some(0) && out.stdout == STREAM_PROBE_BYTES,
+        _ => false,
+    }
+}
+
+pub async fn detect<H: Handler>(
+    handle: &Handle<H>,
+    container: Option<&str>,
+) -> Option<(RemoteShell, bool)> {
+    let shell = dialect(handle, container).await?;
+    let streams = streams(handle, &shell, container).await;
+    Some((shell, streams))
+}
+
+fn is_expanded_temp(out: &str) -> bool {
+    let Some(temp) = out.lines().find_map(|l| l.trim().strip_prefix(TEMP_MARKER)) else {
+        return false;
+    };
+    let b = temp.trim().as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
 }
 
 /// `/C:/Users/x` (the form Win32-OpenSSH's SFTP speaks) → `C:\Users\x`.
@@ -95,21 +135,9 @@ fn cmd_quote(s: &str) -> String {
     out
 }
 
-fn to_sftp(native: &str) -> String {
-    format!("/{}", native.replace('\\', "/"))
-}
-
 impl RemoteShell {
     pub fn is_windows(&self) -> bool {
         matches!(self, Self::Windows { .. })
-    }
-
-    /// SFTP path of a temp file named `name`.
-    pub fn temp_path(&self, name: &str) -> String {
-        match self {
-            Self::Posix => format!("/tmp/{name}"),
-            Self::Windows { temp, .. } => format!("{}/{name}", to_sftp(temp)),
-        }
     }
 
     pub fn quote(&self, s: &str) -> String {
@@ -157,53 +185,135 @@ impl RemoteShell {
         }
     }
 
-    pub fn rm(&self, path: &str) -> String {
-        let p = self.quote_path(path);
+    /// Run `cmd` with its output merged and report its exit code in the
+    /// `__TF_EXIT__` marker `exec_command` looks for.
+    pub fn status(&self, cmd: &str) -> String {
         match self {
-            Self::Posix => format!("rm -f {p}"),
+            Self::Posix => format!("{cmd} 2>&1; echo __TF_EXIT__:$?"),
+            // cmd.exe expands %errorlevel% before the line runs, so branch on success instead.
             Self::Windows {
                 shell: WinShell::Cmd,
-                ..
-            } => format!("del /f /q {p} 2>nul"),
+            } => format!("{cmd} 2>&1 && echo __TF_EXIT__:0 || echo __TF_EXIT__:1"),
             Self::Windows {
                 shell: WinShell::PowerShell,
-                ..
-            } => format!("Remove-Item -Force -LiteralPath {p} -ErrorAction SilentlyContinue"),
+            } => format!("{cmd} 2>&1; $rc = $LASTEXITCODE; '__TF_EXIT__:' + $rc"),
         }
     }
 
-    /// Run `cmd` with its output merged, then `cleanup`, and report `cmd`'s exit
-    /// code in the `__TF_EXIT__` marker `exec_command` looks for.
-    pub fn status(&self, cmd: &str, cleanup: Option<&str>) -> String {
-        match (self, cleanup) {
-            (Self::Posix, None) => format!("{cmd} 2>&1; echo __TF_EXIT__:$?"),
-            (Self::Posix, Some(c)) => {
-                format!("{cmd} 2>&1; RC=$?; {c}; echo __TF_EXIT__:$RC")
+    fn quote_all(&self, items: &[String]) -> String {
+        items
+            .iter()
+            .map(|i| self.quote(i))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn tar_c(&self, archive: Option<&str>, parent: &str, items: &[String], deref: bool) -> String {
+        format!(
+            "tar -czf {arch} {deref}-C {parent} -- {items}",
+            arch = archive.map_or_else(|| "-".to_string(), |a| self.quote_path(a)),
+            deref = if deref { self.deref_flags() } else { "" },
+            parent = self.quote_path(parent),
+            items = self.quote_all(items),
+        )
+    }
+
+    fn tar_x(&self, archive: Option<&str>, dest: &str, strip: bool) -> String {
+        let tar = format!(
+            "tar -xzf {arch} {strip}-C {dest}",
+            arch = archive.map_or_else(|| "-".to_string(), |a| self.quote_path(a)),
+            strip = if strip { "--strip-components=1 " } else { "" },
+            dest = self.quote_path(dest),
+        );
+        self.in_dir(dest, &tar)
+    }
+
+    /// PowerShell's own exit code says only whether the last command threw.
+    fn exits(&self, cmd: &str) -> String {
+        match self {
+            Self::Windows {
+                shell: WinShell::PowerShell,
+                ..
+            } => format!("{cmd}; exit $LASTEXITCODE"),
+            _ => cmd.to_string(),
+        }
+    }
+
+    pub fn compress(
+        &self,
+        archive: &str,
+        parent: &str,
+        items: &[String],
+    ) -> Result<String, String> {
+        self.checked(self.status(&self.tar_c(Some(archive), parent, items, false)))
+    }
+
+    pub fn extract(&self, archive: &str, dest: &str) -> String {
+        self.status(&self.tar_x(Some(archive), dest, false))
+    }
+
+    pub fn create_to_stdout(
+        &self,
+        parent: &str,
+        items: &[String],
+        deref: bool,
+    ) -> Result<String, String> {
+        self.checked(self.exits(&self.tar_c(None, parent, items, deref)))
+    }
+
+    pub fn extract_from_stdin(&self, dest: &str, strip: bool) -> String {
+        self.exits(&self.tar_x(None, dest, strip))
+    }
+
+    pub fn stream_probe(&self) -> String {
+        self.exits("tar -xzf - -O")
+    }
+
+    pub fn size_probe(&self, parent: &str, items: &[String]) -> Option<String> {
+        match self {
+            Self::Posix => Some(format!(
+                "cd {} && du -sk -- {}",
+                self.quote_path(parent),
+                self.quote_all(items)
+            )),
+            Self::Windows {
+                shell: WinShell::PowerShell,
+                ..
+            } => {
+                let base = parent.trim_end_matches('/');
+                let paths: Vec<String> = items
+                    .iter()
+                    .map(|i| self.quote_path(&format!("{base}/{i}")))
+                    .collect();
+                Some(format!(
+                    "(Get-ChildItem -LiteralPath {} -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum",
+                    paths.join(",")
+                ))
             }
-            // cmd.exe expands %errorlevel% before the line runs, so branch on success instead.
-            (
-                Self::Windows {
-                    shell: WinShell::Cmd,
-                    ..
-                },
-                c,
-            ) => {
-                let then = |code: u8| match c {
-                    Some(c) => format!("({c} & echo __TF_EXIT__:{code})"),
-                    None => format!("echo __TF_EXIT__:{code}"),
-                };
-                format!("{cmd} 2>&1 && {} || {}", then(0), then(1))
+            Self::Windows {
+                shell: WinShell::Cmd,
+                ..
+            } => None,
+        }
+    }
+
+    pub fn parse_size(&self, out: &str) -> Option<u64> {
+        match self {
+            Self::Posix => {
+                let kib: Vec<u64> = out
+                    .lines()
+                    .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+                    .collect();
+                (!kib.is_empty()).then(|| kib.iter().sum::<u64>() * 1024)
             }
-            (
-                Self::Windows {
-                    shell: WinShell::PowerShell,
-                    ..
-                },
-                c,
-            ) => {
-                let c = c.map(|c| format!("{c}; ")).unwrap_or_default();
-                format!("{cmd} 2>&1; $rc = $LASTEXITCODE; {c}'__TF_EXIT__:' + $rc")
-            }
+            Self::Windows {
+                shell: WinShell::PowerShell,
+                ..
+            } => out.trim().parse().ok(),
+            Self::Windows {
+                shell: WinShell::Cmd,
+                ..
+            } => None,
         }
     }
 
@@ -226,22 +336,51 @@ impl RemoteShell {
 mod tests {
     use super::*;
 
+    #[test]
+    fn container_commands_run_inside_sh() {
+        assert_eq!(wrap(None, "tar -xzf - -O"), "tar -xzf - -O");
+        assert_eq!(
+            wrap(Some("ab c"), "tar -xzf - -O"),
+            "docker exec -i 'ab c' sh -c 'tar -xzf - -O'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_binary_clean_posix_host_streams() {
+        use crate::ssh::test_proc_server::{proc_server, ProcOptions};
+        let (handle, _) = proc_server(ProcOptions::default()).await;
+        assert_eq!(
+            detect(&handle, None).await,
+            Some((RemoteShell::Posix, true))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_host_that_mangles_newlines_keeps_its_dialect_but_never_streams() {
+        use crate::ssh::test_proc_server::{proc_server, ProcOptions};
+        let (handle, _) = proc_server(ProcOptions {
+            crlf: true,
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(
+            detect(&handle, None).await,
+            Some((RemoteShell::Posix, false))
+        );
+    }
+
     fn win(shell: WinShell) -> RemoteShell {
-        RemoteShell::Windows {
-            shell,
-            temp: r"C:\Users\me\AppData\Local\Temp".into(),
-        }
+        RemoteShell::Windows { shell }
     }
 
     #[test]
     fn temp_probe_accepts_only_an_expanded_windows_path() {
-        assert_eq!(
-            parse_temp("__TF_TEMP__:C:\\Users\\me\\Temp\r\n").as_deref(),
-            Some(r"C:\Users\me\Temp")
-        );
-        assert_eq!(parse_temp("__TF_TEMP__:%TEMP%\n"), None);
-        assert_eq!(parse_temp("__TF_TEMP__::TEMP\n"), None);
-        assert_eq!(parse_temp("sh: 1: __TF_TEMP__:: not found\n"), None);
+        assert!(is_expanded_temp("__TF_TEMP__:C:\\Users\\me\\Temp\r\n"));
+        assert!(!is_expanded_temp("__TF_TEMP__:%TEMP%\n"));
+        assert!(!is_expanded_temp("__TF_TEMP__::TEMP\n"));
+        assert!(!is_expanded_temp("sh: 1: __TF_TEMP__:: not found\n"));
     }
 
     #[test]
@@ -250,18 +389,6 @@ mod tests {
         assert_eq!(to_native("/C:/Users/me/"), r"C:\Users\me");
         assert_eq!(to_native("/C:"), r"C:\.");
         assert_eq!(to_native("/D:/"), r"D:\.");
-    }
-
-    #[test]
-    fn windows_archives_are_staged_in_temp() {
-        assert_eq!(
-            win(WinShell::Cmd).temp_path("tf_1.tar.gz"),
-            "/C:/Users/me/AppData/Local/Temp/tf_1.tar.gz"
-        );
-        assert_eq!(
-            RemoteShell::Posix.temp_path("tf_1.tar.gz"),
-            "/tmp/tf_1.tar.gz"
-        );
     }
 
     #[test]
@@ -291,20 +418,16 @@ mod tests {
     #[test]
     fn cmd_status_branches_instead_of_reading_errorlevel() {
         assert_eq!(
-            win(WinShell::Cmd).status("tar x", Some("del y")),
-            "tar x 2>&1 && (del y & echo __TF_EXIT__:0) || (del y & echo __TF_EXIT__:1)"
-        );
-        assert_eq!(
-            win(WinShell::Cmd).status("tar x", None),
+            win(WinShell::Cmd).status("tar x"),
             "tar x 2>&1 && echo __TF_EXIT__:0 || echo __TF_EXIT__:1"
         );
     }
 
     #[test]
-    fn powershell_status_reports_the_exit_code_before_cleanup_changes_it() {
+    fn powershell_status_reports_the_exit_code() {
         assert_eq!(
-            win(WinShell::PowerShell).status("tar x", Some("rm y")),
-            "tar x 2>&1; $rc = $LASTEXITCODE; rm y; '__TF_EXIT__:' + $rc"
+            win(WinShell::PowerShell).status("tar x"),
+            "tar x 2>&1; $rc = $LASTEXITCODE; '__TF_EXIT__:' + $rc"
         );
     }
 
@@ -314,5 +437,90 @@ mod tests {
         assert!(win(WinShell::Cmd).checked(long.clone()).is_err());
         assert!(win(WinShell::PowerShell).checked(long.clone()).is_ok());
         assert!(RemoteShell::Posix.checked(long).is_ok());
+    }
+
+    const SH: RemoteShell = RemoteShell::Posix;
+
+    #[test]
+    fn stream_commands_use_stdio_and_keep_stderr_apart() {
+        assert_eq!(
+            SH.create_to_stdout("/srv", &["x".into(), "y z".into()], false),
+            Ok("tar -czf - -C '/srv' -- 'x' 'y z'".into())
+        );
+        assert_eq!(
+            SH.create_to_stdout("/srv", &["x".into()], true),
+            Ok("tar -czf - -h --ignore-failed-read -C '/srv' -- 'x'".into())
+        );
+        assert_eq!(
+            SH.extract_from_stdin("/srv/it's", true),
+            r"mkdir -p '/srv/it'\''s' && tar -xzf - --strip-components=1 -C '/srv/it'\''s'"
+        );
+        assert_eq!(
+            win(WinShell::Cmd).extract_from_stdin("/C:/d d", false),
+            r#"(mkdir "C:\d d" 2>nul & tar -xzf - -C "C:\d d")"#
+        );
+        assert_eq!(
+            win(WinShell::PowerShell).extract_from_stdin("/C:/it's", false),
+            r"New-Item -ItemType Directory -Force -Path 'C:\it''s' | Out-Null; tar -xzf - -C 'C:\it''s'; exit $LASTEXITCODE"
+        );
+        assert_eq!(SH.stream_probe(), "tar -xzf - -O");
+        assert_eq!(
+            win(WinShell::PowerShell).stream_probe(),
+            "tar -xzf - -O; exit $LASTEXITCODE"
+        );
+    }
+
+    #[test]
+    fn stream_create_never_reads_an_item_as_an_option() {
+        let cmd = SH
+            .create_to_stdout("/srv", &["--version".into()], false)
+            .unwrap();
+        assert!(cmd.ends_with("-C '/srv' -- '--version'"), "{cmd}");
+    }
+
+    #[test]
+    fn compress_and_extract_still_report_through_the_marker() {
+        assert_eq!(
+            SH.compress("/tmp/a.tar.gz", "/srv", &["x".into(), "y z".into()]),
+            Ok("tar -czf '/tmp/a.tar.gz' -C '/srv' -- 'x' 'y z' 2>&1; echo __TF_EXIT__:$?".into())
+        );
+        assert_eq!(
+            SH.extract("/tmp/a.tar.gz", "/dest"),
+            "mkdir -p '/dest' && tar -xzf '/tmp/a.tar.gz' -C '/dest' 2>&1; echo __TF_EXIT__:$?"
+        );
+        let at_root = win(WinShell::Cmd)
+            .compress("/C:/Temp/a", "/C:", &["x".into()])
+            .unwrap();
+        assert!(at_root.contains(r#"-C "C:\." -- "x""#));
+    }
+
+    #[test]
+    fn size_probes_per_dialect() {
+        assert_eq!(
+            SH.size_probe("/srv", &["a".into(), "b c".into()])
+                .as_deref(),
+            Some("cd '/srv' && du -sk -- 'a' 'b c'")
+        );
+        assert_eq!(SH.parse_size("4\ta\n8\tb c\n"), Some(12 * 1024));
+        assert_eq!(
+            win(WinShell::PowerShell)
+                .size_probe("/C:/s", &["a".into()])
+                .as_deref(),
+            Some(
+                r"(Get-ChildItem -LiteralPath 'C:\s\a' -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum"
+            )
+        );
+        assert_eq!(
+            win(WinShell::PowerShell).parse_size("12345\r\n"),
+            Some(12345)
+        );
+        assert_eq!(win(WinShell::Cmd).size_probe("/C:/s", &["a".into()]), None);
+    }
+
+    #[test]
+    fn size_probe_output_that_is_not_a_size_gives_none() {
+        assert_eq!(SH.parse_size("du: cannot access 'a': No such file\n"), None);
+        assert_eq!(SH.parse_size(""), None);
+        assert_eq!(win(WinShell::PowerShell).parse_size("\r\n"), None);
     }
 }

@@ -13,15 +13,19 @@ use tokio_util::sync::CancellationToken;
 
 pub mod dir;
 pub mod editor;
+pub(crate) mod local_tar;
 mod ops;
 mod remote_shell;
+mod stream;
 mod tar;
+mod tar_failure;
+mod tar_host;
 pub mod transfer;
 
 pub use dir::*;
 pub use ops::*;
-pub use remote_shell::RemoteShell;
 pub use tar::*;
+pub use tar_host::{TarHost, TarProbe};
 pub use transfer::*;
 
 pub(super) const CHUNK_SIZE: usize = 256 * 1024; // 256 KB
@@ -74,12 +78,23 @@ pub(super) async fn get_backend(
 
 pub(super) use crate::ssh::exec::shell_quote;
 
-pub(super) fn temp_archive_name(transfer_id: &str) -> String {
-    format!("tf_{}.tar.gz", transfer_id)
+/// Register the transfer, run it, and always deregister it.
+pub(super) async fn with_transfer<F, Fut>(
+    manager: &SftpManager,
+    transfer_id: &str,
+    run: F,
+) -> Result<(), String>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    let token = manager.register_transfer(transfer_id).await;
+    let result = run(token).await;
+    manager.finish_transfer(transfer_id).await;
+    result
 }
 
-/// Register the transfer, hand the resolved backend to `run`, and always
-/// deregister it — the shape every single-object transfer command has.
+/// `with_transfer` for the shape every single-backend transfer command has.
 pub(super) async fn run_backend_transfer<F, Fut>(
     manager: &SftpManager,
     sftp_id: &str,
@@ -90,13 +105,10 @@ where
     F: FnOnce(Arc<dyn FileBackend>, CancellationToken) -> Fut,
     Fut: Future<Output = Result<(), String>>,
 {
-    let token = manager.register_transfer(transfer_id).await;
-    let result = match get_backend(manager, sftp_id).await {
-        Ok(backend) => run(backend, token).await,
-        Err(e) => Err(e),
-    };
-    manager.finish_transfer(transfer_id).await;
-    result
+    with_transfer(manager, transfer_id, |token| async move {
+        run(get_backend(manager, sftp_id).await?, token).await
+    })
+    .await
 }
 
 /// The four single-object transfer commands differ only in which `FileBackend`
@@ -232,27 +244,37 @@ pub(super) async fn remote_size(sftp: &SftpSession, path: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// What a tar-based command found behind an sftp id: a real SFTP session it can
-/// drive itself, or a backend that has to run its own implementation.
-pub(super) enum TarBackend {
-    Session(Arc<Mutex<SftpSession>>),
-    Other(Arc<dyn FileBackend>),
+/// Copy `reader` into `writer` in `CHUNK_SIZE` chunks, calling `on_chunk` after
+/// each and honouring cancellation. Neither side is shut down.
+pub(crate) async fn pump<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    token: &CancellationToken,
+    mut on_chunk: impl FnMut(usize),
+) -> Result<(), String>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    loop {
+        let n = tokio::select! {
+            biased;
+            _ = token.cancelled() => return Err("Transfer cancelled".into()),
+            r = reader.read(&mut buf) => r.map_err(|e| format!("Read error: {e}"))?,
+        };
+        if n == 0 {
+            return Ok(());
+        }
+        tokio::select! {
+            biased;
+            _ = token.cancelled() => return Err("Transfer cancelled".into()),
+            r = writer.write_all(&buf[..n]) => r.map_err(|e| format!("Write error: {e}"))?,
+        }
+        on_chunk(n);
+    }
 }
 
-pub(super) async fn tar_backend(
-    manager: &SftpManager,
-    sftp_id: &str,
-) -> Result<TarBackend, String> {
-    let backend = get_backend(manager, sftp_id).await?;
-    Ok(match backend.as_sftp_session() {
-        Some(session) => TarBackend::Session(session),
-        None => TarBackend::Other(backend),
-    })
-}
-
-/// Copy `reader` into `writer` in `CHUNK_SIZE` chunks, emitting transfer
-/// progress after every chunk and honouring cancellation between them.
-/// Neither side is shut down — the caller owns the close, and its wording.
 pub(crate) async fn pump_chunks<R, W>(
     app: &impl TransferEvents,
     reader: &mut R,
@@ -266,22 +288,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    loop {
-        if token.is_cancelled() {
-            return Err("Transfer cancelled".into());
-        }
-        let n = reader
-            .read(&mut buf)
-            .await
-            .map_err(|e| format!("Read error: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        writer
-            .write_all(&buf[..n])
-            .await
-            .map_err(|e| format!("Write error: {e}"))?;
+    pump(reader, writer, token, |n| {
         *transferred += n as u64;
         app.send(
             &format!("sftp-progress-{}", transfer_id),
@@ -290,8 +297,8 @@ where
                 total,
             },
         );
-    }
-    Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

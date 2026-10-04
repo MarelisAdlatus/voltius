@@ -5,7 +5,6 @@ pub mod real;
 
 pub use backend::FileBackend;
 
-use crate::commands::sftp::RemoteShell;
 use crate::error::AppError;
 use crate::known_hosts::{ConflictPrompt, KnownHostsStore};
 use crate::proxy::ProxySpec;
@@ -18,15 +17,14 @@ use crate::ssh::live_cells::{own_cell, read_cell};
 use crate::ssh::session::SessionHandle;
 use docker_fs::DockerFs;
 use real::{RealSftp, SftpOpener};
-use russh::client::{Handle, Msg};
-use russh::Channel;
+use russh::client::Handle;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -66,7 +64,6 @@ struct SftpEntry {
     handle: Option<SessionHandle>,
     cancel: CancellationToken,
     _jump_handles: Vec<Arc<Handle<SshClient>>>,
-    tar_shell: Arc<OnceCell<Option<RemoteShell>>>,
 }
 
 pub struct SftpManager {
@@ -108,7 +105,6 @@ impl SftpManager {
                 handle,
                 cancel,
                 _jump_handles: jump_handles,
-                tar_shell: Arc::default(),
             },
         );
         id
@@ -350,14 +346,6 @@ impl SftpManager {
             .unwrap_or(false)
     }
 
-    /// Per-session cache of the remote shell tar commands are written for.
-    pub(crate) async fn tar_shell_cell(
-        &self,
-        id: &str,
-    ) -> Option<Arc<OnceCell<Option<RemoteShell>>>> {
-        self.with_entry(id, |e| Arc::clone(&e.tar_shell)).await
-    }
-
     pub async fn close(&self, id: &str) {
         let entry = self.sessions.lock().await.remove(id);
         if let Some(e) = entry {
@@ -405,13 +393,11 @@ impl SftpManager {
     /// stops the wait early, as an error.
     /// The command must report its exit code through the `__TF_EXIT__` marker
     /// (see `RemoteShell::status`); output without it is an error.
-    /// `after_cancel` runs once a cancelled command has actually exited.
     pub async fn exec_command(
         &self,
         sftp_id: &str,
         cmd: &str,
         cancel: Option<&CancellationToken>,
-        after_cancel: Option<String>,
     ) -> Result<(), String> {
         let stop = async {
             match cancel {
@@ -420,28 +406,7 @@ impl SftpManager {
             }
             "Transfer cancelled".to_string()
         };
-        exit_status(&self.exec_until(sftp_id, cmd, stop, after_cancel).await?)
-    }
-
-    /// True only if `cmd` ran and reported exit 0 through its `__TF_EXIT__` marker.
-    pub async fn exec_probe(&self, sftp_id: &str, cmd: &str) -> bool {
-        match self.exec_output(sftp_id, cmd).await {
-            Ok(text) => exit_status(&text).is_ok(),
-            Err(_) => false,
-        }
-    }
-
-    /// Output of a quick probe command, or an error if it hasn't finished in
-    /// `PROBE_TIMEOUT`.
-    pub(crate) async fn exec_output(&self, sftp_id: &str, cmd: &str) -> Result<String, String> {
-        let stop = async {
-            tokio::time::sleep(PROBE_TIMEOUT).await;
-            format!(
-                "Remote command timed out after {}s",
-                PROBE_TIMEOUT.as_secs()
-            )
-        };
-        self.exec_until(sftp_id, cmd, stop, None).await
+        exit_status(&self.exec_until(sftp_id, cmd, stop).await?)
     }
 
     async fn exec_until(
@@ -449,7 +414,6 @@ impl SftpManager {
         sftp_id: &str,
         cmd: &str,
         stop: impl Future<Output = String>,
-        after_stop: Option<String>,
     ) -> Result<String, String> {
         let (handle, session_cancel) = {
             let sessions = self.sessions.lock().await;
@@ -461,78 +425,35 @@ impl SftpManager {
             })?;
             (handle, entry.cancel.clone())
         };
-        run_until(read_cell(&handle), cmd, stop, session_cancel, after_stop).await
+        run_until(read_cell(&handle), cmd, stop, session_cancel).await
     }
 }
 
 /// Run `cmd` and collect its stdout until the channel reaches EOF, or fail
 /// with `stop`'s message if it resolves first. Partial output is never
 /// returned: the caller would read a command that is still running as done.
-/// A stopped command keeps running remotely, so `after_stop` waits for its exit.
 async fn run_until<H: russh::client::Handler + 'static>(
     handle: Arc<Handle<H>>,
     cmd: &str,
     stop: impl Future<Output = String>,
     session_cancel: CancellationToken,
-    after_stop: Option<String>,
 ) -> Result<String, String> {
     let mut channel = open_exec(&handle, cmd).await?;
     let mut output = Vec::new();
-    let mut stopped = false;
     let ended = {
         let mut reader = channel.make_reader();
         tokio::select! {
             read = reader.read_to_end(&mut output) => {
                 read.map(drop).map_err(|e| format!("Remote command failed: {e}"))
             }
-            why = stop => {
-                stopped = true;
-                Err(why)
-            }
+            why = stop => Err(why),
             _ = session_cancel.cancelled() => Err("SFTP session closed".to_string()),
         }
     };
-    match after_stop {
-        Some(cleanup) if stopped => {
-            tokio::spawn(run_after_exit(handle, channel, session_cancel, cleanup));
-        }
-        // A plain `Channel` doesn't close itself on drop the way a stream does.
-        _ => {
-            let _ = channel.close().await;
-        }
-    }
+    // A plain `Channel` doesn't close itself on drop the way a stream does.
+    let _ = channel.close().await;
     ended.map(|()| String::from_utf8_lossy(&output).into_owned())
 }
-
-async fn run_after_exit<H: russh::client::Handler + 'static>(
-    handle: Arc<Handle<H>>,
-    mut channel: Channel<Msg>,
-    session_cancel: CancellationToken,
-    cleanup: String,
-) {
-    let exited = drain(&mut channel, &session_cancel).await;
-    let _ = channel.close().await;
-    if !exited {
-        return;
-    }
-    if let Ok(mut cleanup) = open_exec(&handle, &cleanup).await {
-        drain(&mut cleanup, &session_cancel).await;
-        let _ = cleanup.close().await;
-    }
-}
-
-/// Discard `channel`'s output until it ends; false if the session closed first.
-async fn drain(channel: &mut Channel<Msg>, session_cancel: &CancellationToken) -> bool {
-    let (mut reader, mut sink) = (channel.make_reader(), tokio::io::sink());
-    tokio::select! {
-        _ = tokio::io::copy(&mut reader, &mut sink) => true,
-        _ = session_cancel.cancelled() => false,
-    }
-}
-
-/// How long a probe (`command -v tar`, `echo %TEMP%`) may take before the host
-/// is treated as unable to run it.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Read the `__TF_EXIT__` marker a finished command printed. Its absence means
 /// the command never got that far — the connection dropped, or the host's shell
@@ -566,14 +487,11 @@ mod tests {
     use russh::server::{Auth, ChannelOpenHandle, Msg as ServerMsg, Session};
     use russh::{Channel, ChannelId};
     use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::Notify;
     use tokio_util::sync::CancellationToken;
 
-    /// Answers every exec with an exit marker; `slow` only once `release` fires.
+    /// Answers every exec with an exit marker.
     struct ExecServer {
         ran: Arc<std::sync::Mutex<Vec<String>>>,
-        release: Arc<Notify>,
     }
 
     impl russh::server::Handler for ExecServer {
@@ -600,12 +518,9 @@ mod tests {
             session: &mut Session,
         ) -> Result<(), Self::Error> {
             let cmd = String::from_utf8_lossy(data).into_owned();
-            let (ran, release, handle) = (self.ran.clone(), self.release.clone(), session.handle());
+            let (ran, handle) = (self.ran.clone(), session.handle());
             session.channel_success(channel)?;
             tokio::spawn(async move {
-                if cmd == "slow" {
-                    release.notified().await;
-                }
                 ran.lock().unwrap().push(cmd);
                 let _ = handle.data(channel, &b"__TF_EXIT__:0\n"[..]).await;
                 let _ = handle.eof(channel).await;
@@ -618,75 +533,25 @@ mod tests {
     async fn exec_server() -> (
         Arc<russh::client::Handle<TestClient>>,
         Arc<std::sync::Mutex<Vec<String>>>,
-        Arc<Notify>,
     ) {
         let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let release = Arc::new(Notify::new());
-        let server = ExecServer {
-            ran: ran.clone(),
-            release: release.clone(),
-        };
+        let server = ExecServer { ran: ran.clone() };
         let port = serve_one(Default::default(), server).await;
         let mut handle =
             russh::client::connect(Default::default(), ("127.0.0.1", port), TestClient)
                 .await
                 .unwrap();
         assert!(handle.authenticate_none("test").await.unwrap().success());
-        (Arc::new(handle), ran, release)
-    }
-
-    async fn wait_for(ran: &std::sync::Mutex<Vec<String>>, want: &[&str]) {
-        for _ in 0..200 {
-            if ran.lock().unwrap().as_slice() == want {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!("ran {:?}, wanted {want:?}", ran.lock().unwrap());
+        (Arc::new(handle), ran)
     }
 
     #[tokio::test]
     async fn a_finished_command_returns_its_output() {
-        let (handle, ran, _) = exec_server().await;
+        let (handle, ran) = exec_server().await;
         let never = std::future::pending::<String>();
-        let out = run_until(handle, "fast", never, CancellationToken::new(), None).await;
+        let out = run_until(handle, "fast", never, CancellationToken::new()).await;
         assert_eq!(out, Ok("__TF_EXIT__:0\n".to_string()));
         assert_eq!(*ran.lock().unwrap(), ["fast"]);
-    }
-
-    #[tokio::test]
-    async fn cleanup_after_a_stop_waits_for_the_command_to_exit() {
-        let (handle, ran, release) = exec_server().await;
-        let stop = std::future::ready("stopped".to_string());
-        let out = run_until(
-            handle,
-            "slow",
-            stop,
-            CancellationToken::new(),
-            Some("rm".into()),
-        )
-        .await;
-        assert_eq!(out, Err("stopped".to_string()));
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(ran.lock().unwrap().is_empty(), "cleanup raced the command");
-        release.notify_one();
-        wait_for(&ran, &["slow", "rm"]).await;
-    }
-
-    #[tokio::test]
-    async fn no_cleanup_once_the_session_is_closed() {
-        let (handle, ran, release) = exec_server().await;
-        let session = CancellationToken::new();
-        let stop = std::future::ready("stopped".to_string());
-        let out = run_until(handle, "slow", stop, session.clone(), Some("rm".into())).await;
-        assert!(out.is_err());
-
-        session.cancel();
-        release.notify_one();
-        wait_for(&ran, &["slow"]).await;
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(*ran.lock().unwrap(), ["slow"]);
     }
 
     #[test]

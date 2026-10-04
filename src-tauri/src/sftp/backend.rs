@@ -1,11 +1,10 @@
 //! The `FileBackend` trait: the filesystem operations every SFTP-id speaks,
 //! regardless of transport (real SFTP over SSH, `docker exec` shim, …).
 //!
-//! Server-to-server transfer and the tar fast paths are inherently SFTP-only;
-//! they reach the raw session through `as_sftp_session()` (None for non-SFTP
-//! backends, which fall back to the per-item `*_batch` methods).
+//! Server-to-server per-file transfer needs a raw SFTP session (`as_sftp_session`);
+//! tar streaming needs a host that runs commands (`tar_probe`).
 
-use crate::commands::sftp::RemoteFile;
+use crate::commands::sftp::{RemoteFile, TarProbe};
 use crate::error::AppError;
 use crate::sftp::attrs::{apply_via_shell, AttrChange};
 use crate::ssh::exec::Captured;
@@ -137,9 +136,7 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         Ok(())
     }
     /// Per-item fallback: walk the selection and transfer each entry on its own.
-    /// Backends with a bulk fast path (tar over `docker exec`) override it;
-    /// real SFTP takes the tar path through `as_sftp_session` and only lands
-    /// here as a safety net.
+    /// Tar streaming lives in the commands, which fall back here.
     async fn upload_batch(
         &self,
         app: &E,
@@ -199,9 +196,13 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         Ok(())
     }
 
-    /// Raw SFTP session, for server-to-server transfer and tar fast paths.
+    /// Raw SFTP session, for server-to-server transfer.
     /// None for transports that don't speak real SFTP.
     fn as_sftp_session(&self) -> Option<Arc<Mutex<SftpSession>>> {
+        None
+    }
+
+    fn tar_probe(&self) -> Option<&TarProbe> {
         None
     }
 }
@@ -224,7 +225,7 @@ pub fn skip_unsafe_name(
 
 /// `windows` adds what Windows reads into a name: `\` separates, `C:` is a
 /// drive, and trailing dots and spaces are dropped, so `.. ` means `..`.
-fn is_plain_name(name: &str, windows: bool) -> bool {
+pub(crate) fn is_plain_name(name: &str, windows: bool) -> bool {
     let dots_only = if windows {
         name.trim_end_matches(['.', ' ']).is_empty()
     } else {
@@ -314,6 +315,15 @@ pub(crate) mod test_tree {
                 .iter()
                 .filter(|(n, _)| n == event)
                 .count()
+        }
+
+        pub fn last(&self, event: &str) -> Option<serde_json::Value> {
+            let events = self.0.lock().unwrap();
+            events
+                .iter()
+                .rev()
+                .find(|(n, _)| n == event)
+                .map(|(_, p)| p.clone())
         }
 
         pub fn skipped(&self, transfer_id: &str) -> Vec<String> {
