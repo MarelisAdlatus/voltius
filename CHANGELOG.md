@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-05
+
+### Added
+
+- SFTP uploads, downloads and remote-to-remote copies, for both files and folders, survive a dropped connection. They wait up to 5 minutes for the session to come back and continue from where they stopped. A cut-off copy never replaces the real file, and a resumed file is checked end to end before it lands. The queue shows "Waiting for connection…" and where a transfer resumed (#487)
+
+### Fixed
+
+- Retrying an SFTP transfer after the session reconnects resumes it instead of failing with "session not found" (#487)
+- A folder transfer no longer falls back to file by file for the rest of the connection just because the first tar check got no answer (refused channel, timeout or reconnect). The host is asked again (#478)
+- The custom color popover in the folder and role appearance pickers no longer closes the picker when you click inside it (#484)
+- The SFTP tab in the right panel no longer scrolls sideways or shows a white square in its corner (#486)
+
 ## [0.48.0] - 2026-10-04
 
 ### Added

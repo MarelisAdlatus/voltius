@@ -1,6 +1,6 @@
 [package]
 name = "voltius"
-version = "0.48.0"
+version = "0.49.0"
 description = "Open-Source SSH & SFTP Client"
 authors = ["Voltius Contributors"]
 edition = "2021"
