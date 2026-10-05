@@ -1,6 +1,7 @@
 pub mod attrs;
 pub mod backend;
 pub mod docker_fs;
+pub mod link;
 pub mod real;
 
 pub use backend::FileBackend;
@@ -13,7 +14,7 @@ use crate::ssh::client::{
     tunnel_hop, JumpHostConnect, SshClient,
 };
 use crate::ssh::exec::open_exec;
-use crate::ssh::live_cells::{own_cell, read_cell};
+use crate::ssh::live_cells::{own_cell, read_cell, Cell};
 use crate::ssh::session::SessionHandle;
 use docker_fs::DockerFs;
 use real::{RealSftp, SftpOpener};
@@ -63,7 +64,7 @@ struct SftpEntry {
     /// across a reconnect instead of staying pinned to the dead handle.
     handle: Option<SessionHandle>,
     cancel: CancellationToken,
-    _jump_handles: Vec<Arc<Handle<SshClient>>>,
+    jump_handles: Vec<Arc<Handle<SshClient>>>,
 }
 
 pub struct SftpManager {
@@ -72,6 +73,54 @@ pub struct SftpManager {
     transfers: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// Per-(sftp_id, path) write serialization locks.
     write_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+}
+
+fn relink_cell<T>(slot: &mut Option<Cell<T>>, value: T) -> Option<Cell<T>> {
+    let cell = slot.as_ref()?;
+    *cell.write().unwrap() = value;
+    Some(Arc::clone(cell))
+}
+
+/// Probe a channel every `interval`; after `max` straight failures report the link closed,
+/// matching the terminal keepalive presets. Off when keepalive is off.
+fn spawn_keepalive(
+    app: &AppHandle,
+    id: &str,
+    handle: SessionHandle,
+    cancel: CancellationToken,
+    interval_secs: u64,
+    max: usize,
+) {
+    if interval_secs == 0 || max == 0 {
+        return;
+    }
+    let (app, id) = (app.clone(), id.to_string());
+    let probe_every = Duration::from_secs(interval_secs);
+    let probe_timeout = Duration::from_secs(interval_secs.max(2));
+    tokio::spawn(async move {
+        let mut failures = 0usize;
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(probe_every) => {}
+            }
+            let current = read_cell(&handle);
+            let result = tokio::time::timeout(probe_timeout, current.channel_open_session()).await;
+            match result {
+                Ok(Ok(ch)) => {
+                    let _ = ch.close().await;
+                    failures = 0;
+                }
+                _ => {
+                    failures += 1;
+                    if failures >= max {
+                        let _ = app.emit(&format!("sftp-closed-{id}"), ());
+                        break;
+                    }
+                }
+            }
+        }
+    });
 }
 
 impl SftpManager {
@@ -104,7 +153,7 @@ impl SftpManager {
                 backend,
                 handle,
                 cancel,
-                _jump_handles: jump_handles,
+                jump_handles,
             },
         );
         id
@@ -116,14 +165,10 @@ impl SftpManager {
         handle: SessionHandle,
         opener: SftpOpener,
     ) -> Result<String, String> {
-        let backend = RealSftp::open(Arc::clone(&handle), opener).await?;
+        let cancel = CancellationToken::new();
+        let backend = RealSftp::open(Arc::clone(&handle), opener, cancel.clone()).await?;
         Ok(self
-            .register(
-                Arc::new(backend),
-                Some(handle),
-                CancellationToken::new(),
-                vec![],
-            )
+            .register(Arc::new(backend), Some(handle), cancel, vec![])
             .await)
     }
 
@@ -194,6 +239,7 @@ impl SftpManager {
         keepalive_max: usize,
         legacy_algorithms: bool,
         proxy: Option<ProxySpec>,
+        relink: Option<&str>,
     ) -> Result<String, String> {
         let config = Arc::new(client_config(
             keepalive_interval_secs,
@@ -276,11 +322,28 @@ impl SftpManager {
             SftpStep::SftpSubsystem,
             "Requesting SFTP subsystem",
         );
-        // This connection owns its handle outright — nothing else swaps it, but
-        // it still travels as a cell so every backend takes the same type.
-        let handle = own_cell(Arc::new(final_handle));
-        let backend = RealSftp::open(Arc::clone(&handle), SftpOpener::Subsystem).await?;
+        let shared = Arc::new(final_handle);
+        if let Some(old) = relink {
+            if let Some((cell, cancel)) = self
+                .relink(old, Arc::clone(&shared), jump_handles.clone())
+                .await
+            {
+                spawn_keepalive(
+                    app,
+                    old,
+                    cell,
+                    cancel,
+                    keepalive_interval_secs,
+                    keepalive_max,
+                );
+                return Ok(old.to_string());
+            }
+        }
+        // A cell, so a later reconnect can relink into this id.
+        let handle = own_cell(shared);
         let cancel = CancellationToken::new();
+        let backend =
+            RealSftp::open(Arc::clone(&handle), SftpOpener::Subsystem, cancel.clone()).await?;
         let id = self
             .register(
                 Arc::new(backend),
@@ -289,46 +352,29 @@ impl SftpManager {
                 jump_handles,
             )
             .await;
-
-        // Monitor for connection loss by probing a lightweight channel, paced to
-        // the keepalive preset: probe every `interval`, declare the link dead only
-        // after `max` consecutive failures (≈ interval × max detection, matching the
-        // terminal preset semantics). Disabled when keepalive is "off".
-        if keepalive_interval_secs > 0 && keepalive_max > 0 {
-            let monitor_handle = Arc::clone(&handle);
-            let monitor_app = app.clone();
-            let monitor_id = id.clone();
-            let probe_every = Duration::from_secs(keepalive_interval_secs);
-            let probe_timeout = Duration::from_secs(keepalive_interval_secs.max(2));
-            tokio::spawn(async move {
-                let mut failures = 0usize;
-                loop {
-                    tokio::select! {
-                        _ = cancel.cancelled() => break,
-                        _ = tokio::time::sleep(probe_every) => {}
-                    }
-                    let current = read_cell(&monitor_handle);
-                    let result =
-                        tokio::time::timeout(probe_timeout, current.channel_open_session()).await;
-                    match result {
-                        Ok(Ok(ch)) => {
-                            let _ = ch.close().await;
-                            failures = 0;
-                        }
-                        _ => {
-                            failures += 1;
-                            if failures >= keepalive_max {
-                                let _ =
-                                    monitor_app.emit(&format!("sftp-closed-{}", monitor_id), ());
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
+        spawn_keepalive(
+            app,
+            &id,
+            handle,
+            cancel,
+            keepalive_interval_secs,
+            keepalive_max,
+        );
         Ok(id)
+    }
+
+    /// Point an existing session at a fresh SSH handle, keeping its id and in-flight transfers.
+    async fn relink(
+        &self,
+        id: &str,
+        handle: Arc<Handle<SshClient>>,
+        jump_handles: Vec<Arc<Handle<SshClient>>>,
+    ) -> Option<(SessionHandle, CancellationToken)> {
+        let mut sessions = self.sessions.lock().await;
+        let entry = sessions.get_mut(id)?;
+        let cell = relink_cell(&mut entry.handle, handle)?;
+        entry.jump_handles = jump_handles;
+        Some((cell, entry.cancel.clone()))
     }
 
     async fn with_entry<T>(&self, id: &str, read: impl FnOnce(&SftpEntry) -> T) -> Option<T> {
@@ -350,8 +396,8 @@ impl SftpManager {
         let entry = self.sessions.lock().await.remove(id);
         if let Some(e) = entry {
             e.cancel.cancel();
-            if let Some(s) = e.backend.as_sftp_session() {
-                let _ = s.lock().await.close().await;
+            if let Some(fs) = e.backend.sftp_fs() {
+                fs.close_session().await;
             }
         }
     }
@@ -376,6 +422,7 @@ impl SftpManager {
     /// Remove a completed/failed transfer token.
     pub async fn finish_transfer(&self, transfer_id: &str) {
         self.transfers.lock().await.remove(transfer_id);
+        crate::commands::sftp::resume::clear_resume(transfer_id);
     }
 
     /// Return a shared mutex keyed by (sftp_id, path); created on first use.
@@ -482,7 +529,7 @@ fn exit_status(text: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{exit_status, run_until, SftpManager};
+    use super::{exit_status, read_cell, relink_cell, run_until, SftpManager};
     use crate::port_forward::test_ssh::{serve_one, TestClient};
     use russh::server::{Auth, ChannelOpenHandle, Msg as ServerMsg, Session};
     use russh::{Channel, ChannelId};
@@ -589,5 +636,16 @@ mod tests {
         let a = mgr.path_lock("s1", "/a").await;
         let b = mgr.path_lock("s1", "/b").await;
         assert!(!Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn relinking_swaps_the_shared_cell_in_place() {
+        use crate::ssh::live_cells::{own_cell, Cell};
+        let held = own_cell(1u32);
+        let mut slot = Some(Arc::clone(&held));
+        let got = relink_cell(&mut slot, 2).expect("a cell to relink");
+        assert_eq!(read_cell(&held), 2);
+        assert!(Arc::ptr_eq(&got, &held));
+        assert!(relink_cell(&mut None::<Cell<u32>>, 3).is_none());
     }
 }

@@ -1,14 +1,16 @@
+use crate::error::AppError;
 use crate::sftp::backend::TransferEvents;
 use crate::sftp::{FileBackend, SftpManager};
+use resume::sftp_fs::SftpFs;
 use russh_sftp::client::fs::File;
-use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::OpenFlags;
 use serde::Serialize;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::Mutex;
+use std::task::{Context, Poll};
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio_util::sync::CancellationToken;
 
 pub mod dir;
@@ -16,6 +18,7 @@ pub mod editor;
 pub(crate) mod local_tar;
 mod ops;
 mod remote_shell;
+pub(crate) mod resume;
 mod stream;
 mod tar;
 mod tar_failure;
@@ -55,15 +58,12 @@ pub struct TransferProgress {
     pub total: u64,
 }
 
-pub(super) async fn get_session<'a>(
-    manager: &'a SftpManager,
-    sftp_id: &'a str,
-) -> Result<Arc<Mutex<SftpSession>>, String> {
+pub(super) async fn get_sftp_fs(manager: &SftpManager, sftp_id: &str) -> Result<SftpFs, AppError> {
     manager
         .backend(sftp_id)
         .await
-        .and_then(|b| b.as_sftp_session())
-        .ok_or_else(|| format!("SFTP session '{}' not found", sftp_id))
+        .and_then(|b| b.sftp_fs())
+        .ok_or_else(|| format!("SFTP session '{sftp_id}' not found").into())
 }
 
 pub(super) async fn get_backend(
@@ -83,10 +83,10 @@ pub(super) async fn with_transfer<F, Fut>(
     manager: &SftpManager,
     transfer_id: &str,
     run: F,
-) -> Result<(), String>
+) -> Result<(), AppError>
 where
     F: FnOnce(CancellationToken) -> Fut,
-    Fut: Future<Output = Result<(), String>>,
+    Fut: Future<Output = Result<(), AppError>>,
 {
     let token = manager.register_transfer(transfer_id).await;
     let result = run(token).await;
@@ -100,10 +100,10 @@ pub(super) async fn run_backend_transfer<F, Fut>(
     sftp_id: &str,
     transfer_id: &str,
     run: F,
-) -> Result<(), String>
+) -> Result<(), AppError>
 where
     F: FnOnce(Arc<dyn FileBackend>, CancellationToken) -> Fut,
-    Fut: Future<Output = Result<(), String>>,
+    Fut: Future<Output = Result<(), AppError>>,
 {
     with_transfer(manager, transfer_id, |token| async move {
         run(get_backend(manager, sftp_id).await?, token).await
@@ -128,7 +128,7 @@ macro_rules! backend_transfer_command {
             $from: String,
             $to: String,
             transfer_id: String,
-        ) -> Result<(), String> {
+        ) -> Result<(), $crate::error::AppError> {
             let tid = transfer_id.clone();
             $crate::commands::sftp::run_backend_transfer(
                 &sftp_state,
@@ -191,6 +191,34 @@ impl DerefMut for SftpFile {
     }
 }
 
+impl AsyncRead for SftpFile {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut **self.get_mut()).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for SftpFile {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut **self.get_mut()).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut **self.get_mut()).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut **self.get_mut()).poll_shutdown(cx)
+    }
+}
+
 impl Drop for SftpFile {
     fn drop(&mut self) {
         let Some(mut file) = self.file.take() else {
@@ -198,50 +226,12 @@ impl Drop for SftpFile {
         };
         // Outside a runtime there is nothing to await on: `File`'s own drop is the fallback.
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            // Bounded: on a dead link the pending write acks never resolve.
             rt.spawn(async move {
-                let _ = file.shutdown().await;
+                let _ = tokio::time::timeout(Duration::from_secs(30), file.shutdown()).await;
             });
         }
     }
-}
-
-/// Open a remote file for writing (create + truncate), holding the session lock
-/// for the open alone.
-pub(super) async fn open_remote_write(
-    session: &Mutex<SftpSession>,
-    path: &str,
-) -> Result<SftpFile, String> {
-    let sftp = session.lock().await;
-    sftp.open_with_flags(
-        path,
-        OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-    )
-    .await
-    .map(|f| SftpFile::new(f, "Flush error"))
-    .map_err(|e| format!("Cannot create remote file {path}: {e}"))
-}
-
-/// Open a remote file for reading, returning its size alongside the handle.
-/// A missing or unreadable size is reported as 0 — progress only needs a bound.
-pub(super) async fn open_remote_read(
-    session: &Mutex<SftpSession>,
-    path: &str,
-) -> Result<(u64, SftpFile), String> {
-    let sftp = session.lock().await;
-    let total = remote_size(&sftp, path).await;
-    let file = sftp
-        .open(path)
-        .await
-        .map_err(|e| format!("Cannot open remote file {path}: {e}"))?;
-    Ok((total, SftpFile::new(file, "Close error")))
-}
-
-pub(super) async fn remote_size(sftp: &SftpSession, path: &str) -> u64 {
-    sftp.metadata(path)
-        .await
-        .ok()
-        .and_then(|m| m.size)
-        .unwrap_or(0)
 }
 
 /// Copy `reader` into `writer` in `CHUNK_SIZE` chunks, calling `on_chunk` after
@@ -328,5 +318,23 @@ mod listing_tests {
         sort_listing(&mut files);
         let names: Vec<_> = files.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["alpha", "Zed", "A.txt", "b.txt"]);
+    }
+}
+
+#[cfg(test)]
+mod transfer_error_tests {
+    use super::with_transfer;
+    use crate::error::{AppError, ErrorCode};
+    use crate::sftp::SftpManager;
+
+    #[tokio::test]
+    async fn a_coded_transfer_error_keeps_its_code() {
+        let manager = SftpManager::new();
+        let err = with_transfer(&manager, "t", |_| async {
+            Err::<(), _>(AppError::coded(ErrorCode::TransferVerifyFailed, "x"))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::TransferVerifyFailed));
     }
 }

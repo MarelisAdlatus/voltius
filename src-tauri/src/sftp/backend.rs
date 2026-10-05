@@ -1,20 +1,18 @@
 //! The `FileBackend` trait: the filesystem operations every SFTP-id speaks,
 //! regardless of transport (real SFTP over SSH, `docker exec` shim, …).
 //!
-//! Server-to-server per-file transfer needs a raw SFTP session (`as_sftp_session`);
+//! Server-to-server per-file transfer needs a raw SFTP session (`sftp_fs`);
 //! tar streaming needs a host that runs commands (`tar_probe`).
 
+use crate::commands::sftp::resume::sftp_fs::SftpFs;
 use crate::commands::sftp::{RemoteFile, TarProbe};
 use crate::error::AppError;
 use crate::sftp::attrs::{apply_via_shell, AttrChange};
 use crate::ssh::exec::Captured;
 use async_trait::async_trait;
-use russh_sftp::client::SftpSession;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 /// Where a transfer's progress and skipped-name events go: the app, or a test's recorder.
@@ -63,7 +61,7 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         remote_path: &str,
         transfer_id: &str,
         token: &CancellationToken,
-    ) -> Result<(), String>;
+    ) -> Result<(), AppError>;
     async fn download_file(
         &self,
         app: &E,
@@ -71,7 +69,7 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         local_path: &str,
         transfer_id: &str,
         token: &CancellationToken,
-    ) -> Result<(), String>;
+    ) -> Result<(), AppError>;
     /// Per-item fallback: create the tree, then upload each file on its own.
     async fn upload_dir(
         &self,
@@ -80,7 +78,7 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         remote_path: &str,
         transfer_id: &str,
         token: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         let local_base = PathBuf::from(local_path);
         let mut dirs: Vec<PathBuf> = Vec::new();
         let mut files: Vec<PathBuf> = Vec::new();
@@ -111,7 +109,7 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         local_path: &str,
         transfer_id: &str,
         token: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         let mut stack = vec![(remote_path.to_string(), PathBuf::from(local_path))];
         while let Some((rdir, ldir)) = stack.pop() {
             tokio::fs::create_dir_all(&ldir)
@@ -144,7 +142,7 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         remote_dir: &str,
         transfer_id: &str,
         token: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         let base = remote_dir.trim_end_matches('/');
         let _ = self.mkdir(base).await;
         for p in local_paths {
@@ -172,7 +170,7 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         local_dir: &str,
         transfer_id: &str,
         token: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         for p in remote_paths {
             if token.is_cancelled() {
                 return Err("Transfer cancelled".into());
@@ -196,9 +194,9 @@ pub trait FileBackend<E: TransferEvents = AppHandle>: Send + Sync {
         Ok(())
     }
 
-    /// Raw SFTP session, for server-to-server transfer.
+    /// Resumable SFTP endpoint, for server-to-server transfer.
     /// None for transports that don't speak real SFTP.
-    fn as_sftp_session(&self) -> Option<Arc<Mutex<SftpSession>>> {
+    fn sftp_fs(&self) -> Option<SftpFs> {
         None
     }
 
@@ -410,9 +408,9 @@ mod tests {
             local_path: &str,
             _: &str,
             _: &CancellationToken,
-        ) -> Result<(), String> {
+        ) -> Result<(), AppError> {
             let content = lookup(remote_path).flatten().ok_or("not a file")?;
-            std::fs::write(local_path, content).map_err(|e| e.to_string())
+            Ok(std::fs::write(local_path, content).map_err(|e| e.to_string())?)
         }
         async fn canonicalize(&self, _: &str) -> Result<String, AppError> {
             unimplemented!()
@@ -446,7 +444,7 @@ mod tests {
             remote_path: &str,
             _: &str,
             _: &CancellationToken,
-        ) -> Result<(), String> {
+        ) -> Result<(), AppError> {
             self.log.lock().unwrap().push(format!("put {remote_path}"));
             Ok(())
         }

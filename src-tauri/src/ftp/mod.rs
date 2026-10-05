@@ -1,7 +1,7 @@
 //! `FtpBackend`: a `FileBackend` over plain FTP or explicit FTPS (`AUTH TLS`).
 //!
 //! FTP has no shell and no SSH handle, so it never takes the tar/exec or
-//! server-to-server fast paths (`as_sftp_session` stays `None`); the directory
+//! server-to-server fast paths (`sftp_fs` stays `None`); the directory
 //! and batch operations fall back to per-file transfers. Listing leans on
 //! `suppaftp`'s `list::File` parser (POSIX/DOS/MLSx); permissions and symlink
 //! info are best-effort.
@@ -256,7 +256,7 @@ impl FileBackend for FtpBackend {
         remote_path: &str,
         transfer_id: &str,
         token: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         let mut local = tokio::fs::File::open(local_path)
             .await
             .map_err(|e| format!("Cannot open local file: {e}"))?;
@@ -283,11 +283,11 @@ impl FileBackend for FtpBackend {
         .await
         {
             let _ = ftp.abort(data).await;
-            return Err(e);
+            return Err(e.into());
         }
         ftp.finalize_put_stream(data)
             .await
-            .map_err(|e| format!("upload finalize failed: {e}"))
+            .map_err(|e| format!("upload finalize failed: {e}").into())
     }
 
     async fn download_file(
@@ -297,7 +297,7 @@ impl FileBackend for FtpBackend {
         local_path: &str,
         transfer_id: &str,
         token: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         if let Some(parent) = Path::new(local_path).parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -329,7 +329,7 @@ impl FileBackend for FtpBackend {
         .await
         {
             drop(stream);
-            return Err(e);
+            return Err(e.into());
         }
         ftp.finalize_retr_stream(stream)
             .await

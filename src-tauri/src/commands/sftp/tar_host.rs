@@ -134,6 +134,8 @@ mod tests {
         exit_status: true,
         window: None,
         refuse_channels: 0,
+        drop_after_bytes: None,
+        blackhole_after_bytes: None,
     };
 
     #[tokio::test]
