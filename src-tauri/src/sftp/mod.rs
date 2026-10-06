@@ -416,9 +416,7 @@ impl SftpManager {
         let entry = self.sessions.lock().await.remove(id);
         if let Some(e) = entry {
             e.cancel.cancel();
-            if let Some(fs) = e.backend.sftp_fs() {
-                fs.close_session().await;
-            }
+            e.backend.close().await;
         }
     }
 
