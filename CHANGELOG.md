@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-10-06
+
+### Fixed
+
+- The Proxmox panel shows each LXC's memory instead of 0M (#519)
+- The Proxmox panel's Restart button restarts an LXC (`pct reboot`) instead of failing with an unknown-command error (#508)
+- The Processes panel's kill buttons and memory column fit inside the side panel instead of needing a sideways scroll (#509)
+- A shared-terminal guest's keystrokes, and fast typing on a busy machine, reach the shell in the order they were typed (#518)
+- A shared-terminal guest holding control reads "You have control" instead of "Watching" (#516)
+- No control toasts on top of the shared-terminal bar's own Grant / Deny or "You have control"; they still show when that terminal is not on screen (#515)
+- Snippet choice variables and plugin dropdown settings use the app's themed dropdown instead of a white system list on Linux (#517)
+- The SFTP queue's "Resumed at" badge is an icon with a hover card, so it no longer overlaps the transfer status (#504)
+- On mobile, the terminal's left margin uses the theme's background color (#502)
+
 ## [0.49.0] - 2026-10-05
 
 ### Added
