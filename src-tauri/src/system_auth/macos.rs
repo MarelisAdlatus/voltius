@@ -23,26 +23,34 @@ pub fn available() -> bool {
 }
 
 pub async fn verify(_app: &tauri::AppHandle, reason: &str) -> VerifyOutcome {
+    let rx = start_evaluation(reason);
+    rx.await.unwrap_or(VerifyOutcome::Failed)
+}
+
+// The block and context are not Send, so they must be gone before the await; the
+// reply block holds the context so it is not released mid-evaluation.
+fn start_evaluation(reason: &str) -> oneshot::Receiver<VerifyOutcome> {
     let (tx, rx) = oneshot::channel::<VerifyOutcome>();
-    let tx = Mutex::new(Some(tx));
+    let context = unsafe { LAContext::new() };
+    let pending = Mutex::new(Some((tx, context.clone())));
     let reply = RcBlock::new(move |ok: Bool, err: *mut NSError| {
         let outcome = if ok.as_bool() {
             VerifyOutcome::Ok
         } else {
             unsafe { err.as_ref() }.map_or(VerifyOutcome::Failed, |e| map_error_code(e.code()))
         };
-        if let Some(tx) = tx.lock().unwrap().take() {
+        if let Some((tx, _context)) = pending.lock().unwrap().take() {
             let _ = tx.send(outcome);
         }
     });
     unsafe {
-        LAContext::new().evaluatePolicy_localizedReason_reply(
+        context.evaluatePolicy_localizedReason_reply(
             LAPolicy::DeviceOwnerAuthentication,
             &NSString::from_str(reason),
             &reply,
         );
     }
-    rx.await.unwrap_or(VerifyOutcome::Failed)
+    rx
 }
 
 #[cfg(test)]
