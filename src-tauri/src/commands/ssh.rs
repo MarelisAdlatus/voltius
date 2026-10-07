@@ -1,9 +1,10 @@
 use crate::error::AppError;
+use crate::knock::KnockSpec;
 use crate::known_hosts::{KnownHostsStore, PendingConflicts};
 use crate::port_forward::PortForwardManager;
 use crate::proxy::ProxySpec;
 use crate::ssh::{
-    client::{self, JumpHostConnect},
+    client::{self, HopRoute, JumpHostConnect},
     session::SessionManager,
 };
 use std::sync::Arc;
@@ -41,6 +42,7 @@ pub async fn ssh_connect(
     initial_cwd: Option<String>,
     proxy: Option<ProxySpec>,
     terminal_colors: Option<crate::ssh::control_mode::TerminalColors>,
+    knock: Option<KnockSpec>,
 ) -> Result<(), AppError> {
     let connected = client::connect(
         app,
@@ -67,7 +69,7 @@ pub async fn ssh_connect(
         rows.filter(|r| *r > 0).unwrap_or(24),
         legacy_algorithms.unwrap_or(false),
         initial_cwd,
-        proxy,
+        HopRoute { proxy, knock },
         terminal_colors,
     )
     .await?;
@@ -220,6 +222,7 @@ pub async fn ssh_exec_command(
     command: String,
     legacy_algorithms: Option<bool>,
     proxy: Option<ProxySpec>,
+    knock: Option<KnockSpec>,
 ) -> Result<SshExecResult, String> {
     use tokio::time::{timeout, Duration};
 
@@ -232,7 +235,7 @@ pub async fn ssh_exec_command(
         private_key.as_deref(),
         passphrase.as_deref(),
         legacy_algorithms.unwrap_or(false),
-        proxy.as_ref(),
+        &HopRoute { proxy, knock },
     )
     .await?;
 
@@ -297,6 +300,7 @@ pub async fn ssh_kill_persistent(
     session_id: String,
     legacy_algorithms: Option<bool>,
     proxy: Option<ProxySpec>,
+    knock: Option<KnockSpec>,
 ) -> Result<bool, String> {
     use tokio::io::AsyncReadExt;
     use tokio::time::{timeout, Duration};
@@ -310,7 +314,7 @@ pub async fn ssh_kill_persistent(
         private_key.as_deref(),
         passphrase.as_deref(),
         legacy_algorithms.unwrap_or(false),
-        proxy.as_ref(),
+        &HopRoute { proxy, knock },
     )
     .await?;
 

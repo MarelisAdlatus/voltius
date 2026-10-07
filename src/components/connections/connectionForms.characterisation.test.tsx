@@ -356,12 +356,12 @@ test("ssh form submits its proxy override and only a typed proxy password", asyn
     ref.current!.flush();
   });
   expect(onSubmit.mock.calls[0][0]).toMatchObject({ proxy: { mode: "socks5", host: "p.example", port: 1081 } });
-  expect(onSubmit.mock.calls[0][1].proxyPassword).toBeNull();
+  expect(onSubmit.mock.calls[0][1].proxy_password).toBeNull();
   fireEvent.change(screen.getByLabelText("connections.form.proxy.password"), { target: { value: "pw" } });
   await act(async () => {
     ref.current!.flush();
   });
-  expect(onSubmit.mock.calls[1][1].proxyPassword).toBe("pw");
+  expect(onSubmit.mock.calls[1][1].proxy_password).toBe("pw");
 });
 
 test.each([
@@ -542,6 +542,69 @@ test("ssh form hides its secret fields without View secrets, with no banner", as
   useTeamObjectAccessStore.getState().clearAll();
 });
 
+async function withStoredKnock(run: () => Promise<void>) {
+  const { getSecret } = await import("@/services/vault");
+  (getSecret as ReturnType<typeof vi.fn>).mockImplementation(async (k: string) => (k === "knock_sequence:c1" ? "666/tcp" : null));
+  try { await run(); } finally { (getSecret as ReturnType<typeof vi.fn>).mockImplementation(async () => null); }
+}
+
+test("ssh form loads the saved sequence and submits an edited one with the knock settings", () => withStoredKnock(async () => {
+  const { onSubmit, ref } = renderSsh({ initial: conn({ port_knock: { enabled: true, window_secs: 60 } }) });
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.getByDisplayValue("666")).toBeTruthy();
+  fireEvent.change(screen.getByPlaceholderText("connections.form.hostPlaceholder"), { target: { value: "srv" } });
+  await act(async () => { ref.current!.flush(); });
+  expect(onSubmit.mock.calls[0][0]).toMatchObject({ port_knock: { enabled: true, window_secs: 60 } });
+  expect(onSubmit.mock.calls[0][1].knock_sequence).toBeNull();
+  fireEvent.change(screen.getByDisplayValue("666"), { target: { value: "667" } });
+  await act(async () => { ref.current!.flush(); });
+  expect(onSubmit.mock.calls[1][1].knock_sequence).toBe("667/tcp");
+}));
+
+test.each([
+  ["a blank row while enabled", true, () => fireEvent.click(screen.getByText("connections.knock.addPort")), null],
+  ["an out-of-range port while enabled", true, () => fireEvent.change(screen.getByDisplayValue("666"), { target: { value: "99999" } }), null],
+  ["removing every row while enabled", true, () => fireEvent.click(screen.getByLabelText("connections.knock.remove")), null],
+  ["removing every row while disabled", false, () => fireEvent.click(screen.getByLabelText("connections.knock.remove")), ""],
+] as const)("%s saves the expected knock_sequence", (_name, enabled, edit, want) => withStoredKnock(async () => {
+  const { onSubmit, ref } = renderSsh({ initial: conn({ port_knock: { enabled } }) });
+  await act(async () => { await Promise.resolve(); });
+  edit();
+  await act(async () => { ref.current!.flush(); });
+  expect(onSubmit.mock.calls[0][1].knock_sequence).toBe(want);
+}));
+
+test("an ftp host never reads the knock sequence", async () => {
+  const { getSecret } = await import("@/services/vault");
+  renderSsh({ initial: conn({ connection_type: "ftp", port: 21 }) });
+  await act(async () => { await Promise.resolve(); });
+  expect(getSecret).not.toHaveBeenCalledWith("knock_sequence:c1");
+});
+
+test("a host without knocking submits no knock settings", async () => {
+  const { onSubmit, ref } = renderSsh();
+  fireEvent.change(screen.getByPlaceholderText("connections.form.hostPlaceholder"), { target: { value: "srv" } });
+  await act(async () => { ref.current!.flush(); });
+  expect(onSubmit.mock.calls[0][0].port_knock).toBeUndefined();
+  expect(onSubmit.mock.calls[0][1].knock_sequence).toBeNull();
+});
+
+test("without View secrets the knock ports stay hidden and a save leaves the sequence untouched", () => withStoredKnock(async () => {
+  h.teams = [{ id: "team-1" }];
+  grantOnC1(PERM_BITS.VIEW | PERM_BITS.EDIT_CONNECTIONS);
+  const { getSecret } = await import("@/services/vault");
+  const { onSubmit, ref } = renderSsh({ initial: conn({ vault_id: "team-1", port_knock: { enabled: true } }) });
+  await act(async () => { await Promise.resolve(); });
+  expect(getSecret).not.toHaveBeenCalledWith("knock_sequence:c1");
+  expect(screen.queryByDisplayValue("666")).toBeNull();
+  expect(screen.queryByText("connections.knock.addPort")).toBeNull();
+  fireEvent.change(screen.getByPlaceholderText("connections.form.hostPlaceholder"), { target: { value: "srv" } });
+  await act(async () => { ref.current!.flush(); });
+  expect(onSubmit.mock.calls[0][0]).toMatchObject({ port_knock: { enabled: true } });
+  expect(onSubmit.mock.calls[0][1].knock_sequence).toBeNull();
+  useTeamObjectAccessStore.getState().clearAll();
+}));
+
 test("a new ssh host keeps its secret fields in a vault whose secrets the caller cannot view", () => {
   h.teams = [{ id: "team-1" }];
   h.defaultVaultId = "team-1";
@@ -622,4 +685,13 @@ test("switching protocol keeps a typed username", () => {
   fireEvent.change(usernameField(), { target: { value: "alice" } });
   pickProtocol("protocolSsh", "protocolFtp");
   expect(usernameField().value).toBe("alice");
+});
+
+test.each([
+  ["ssh", renderSsh],
+  ["serial", renderSerial],
+])("%s form labels the pre/post commands as session commands", (_kind, mount) => {
+  mount();
+  expect(screen.getByText("connections.common.sessionCommands")).toBeTruthy();
+  expect(screen.getByText("connections.common.sessionCommandsHint")).toBeTruthy();
 });

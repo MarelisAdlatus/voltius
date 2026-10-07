@@ -25,8 +25,10 @@
       "manageInKeychain": "Manage in Keychain",
       "hostsChaining": "Hosts Chaining",
       "environmentVariables": "Environment Variables",
-      "preCommandPlaceholder": "Pre Command",
-      "postCommandPlaceholder": "Post Command",
+      "preCommandPlaceholder": "Session pre-command",
+      "postCommandPlaceholder": "Session post-command",
+      "sessionCommands": "Session commands",
+      "sessionCommandsHint": "Run in the session after it opens, and when the tab closes.",
       "hostCommand": {
         "useSnippet": "Use a snippet",
         "useInline": "Use inline command",
@@ -206,6 +208,31 @@
       "none": "No default",
       "noneHint": "Hosts without a credential ask you, as today",
       "footnote": "Hosts with a shared credential keep it. Override one host with Connect as."
+    },
+    "knock": {
+      "title": "Port Knocking",
+      "enable": "Knock before connecting",
+      "hint": "Sent from this device, through this host's proxy, before every SSH, SFTP and port-forward connection.",
+      "viaBastion": "This host connects through {{name}}, so Voltius knocks {{name}} using that host's own knock settings.",
+      "sequence": "Sequence",
+      "reorderHint": "Hold and drag to reorder · Sent in this order",
+      "port": "Port",
+      "dragToReorder": "Drag to reorder",
+      "remove": "Remove port",
+      "addPort": "Add port",
+      "timing": "Timing",
+      "delay": "Delay between knocks",
+      "settle": "Wait after last knock",
+      "window": "Firewall window",
+      "windowHint": "How long the firewall keeps SSH open after a knock. The reachability dot only probes inside this window, so the host card never knocks on its own. Leave empty if unknown.",
+      "issue": {
+        "empty": "Add at least one port.",
+        "port": "Ports must be between 1 and 65535.",
+        "udp-proxy": "UDP knocks can't go through this host's proxy. Use TCP steps or a direct connection.",
+        "udp-system": "UDP knocks fail if the system proxy is in use."
+      },
+      "sequenceUnavailable": "The knock sequence for this host isn't available on this device.",
+      "sequenceInvalid": "This host's knock sequence is invalid. Fix it in the host's Port Knocking settings."
     }
   }
 }

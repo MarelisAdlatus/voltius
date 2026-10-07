@@ -60,11 +60,11 @@ vi.mock("@/stores/notificationStore", () => ({ useNotificationStore: { getState:
 vi.mock("@/i18n", () => ({ default: { t: (k: string) => k } }));
 vi.mock("@/lib/logger", () => ({ logFailure: () => () => {} }));
 
-import { saveHostFromForm } from "./hostForm";
+import { emptyHostSecrets, saveHostFromForm } from "./hostForm";
 import { saveKeyFromForm, saveIdentityFromForm } from "./keychainForm";
 
 const TEAM = "team-1";
-const none = { password: null, privateKey: null, passphrase: null, proxyPassword: null };
+const none = emptyHostSecrets();
 
 const editors = [
   {

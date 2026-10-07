@@ -17,6 +17,7 @@ mod ftp;
 mod keychain_android;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod keychain_bundle;
+mod knock;
 mod known_hosts;
 #[cfg(target_os = "linux")]
 mod linux_gfx;

@@ -2,7 +2,7 @@ import { invoke } from "@/lib/invoke";
 import type { Connection, CustomProxyMode, ProxyOverride } from "@/types";
 import i18n from "@/i18n";
 import { getSecret } from "@/services/vault";
-import { findConnection } from "@/services/credentials";
+import { firstHopConnection, resolveKnock, type KnockOverride, type KnockSpec } from "@/services/portKnock";
 import { getGlobalProxy } from "@/stores/connectivitySettingsStore";
 import { GLOBAL_PROXY_PASSWORD_KEY, proxyPasswordKey } from "@/services/teamVaultSecretKeys";
 
@@ -49,10 +49,24 @@ export async function resolveProxy(
   }
 }
 
-export function resolveFirstHopProxy(conn: Connection): Promise<ProxySpec | null> {
-  const firstJump = conn.jump_hosts?.[0];
-  const bastion = firstJump ? findConnection(firstJump.connection_id) : undefined;
-  return resolveProxy(bastion?.proxy ? bastion : conn);
+export interface HopRoute { proxy: ProxySpec | null; knock: KnockSpec | null }
+
+export async function resolveDirectHop(
+  conn: Pick<Connection, "id" | "proxy" | "port_knock">,
+  overrides?: { proxy?: ProxyOverride | null; password?: string; knock?: KnockOverride },
+): Promise<HopRoute> {
+  const [proxy, knock] = await Promise.all([resolveProxy(conn, overrides), resolveKnock(conn, overrides?.knock)]);
+  return { proxy, knock };
+}
+
+export function firstHopProxy(conn: Connection): Promise<ProxySpec | null> {
+  const dialed = firstHopConnection(conn);
+  return resolveProxy(dialed?.proxy ? dialed : conn);
+}
+
+export async function resolveFirstHop(conn: Connection): Promise<HopRoute> {
+  const [proxy, knock] = await Promise.all([firstHopProxy(conn), resolveKnock(firstHopConnection(conn))]);
+  return { proxy, knock };
 }
 
 export interface DetectedProxy {
