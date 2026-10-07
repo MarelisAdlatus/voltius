@@ -22,6 +22,8 @@ export const messages: Record<PluginLocale, Record<string,string>> = {
     "consentPrompt_other": "Import {{count}} hosts from this computer's ~/.ssh/config into this account's Personal vault? Their SSH keys are imported too.",
     "consentImport": "Import",
     "consentSkip": "Don't import",
+    "hostFailed": "Couldn't sync SSH host {{name}}: {{error}}",
+    "syncFailed": "SSH config sync failed: {{error}}",
   },
   fr: {
     "settingsLabel": "Synchronisation de la config SSH",
@@ -45,6 +47,8 @@ export const messages: Record<PluginLocale, Record<string,string>> = {
     "consentPrompt_other": "Importer {{count}} hôtes du ~/.ssh/config de cet ordinateur dans le coffre Personnel de ce compte ? Leurs clés SSH seront aussi importées.",
     "consentImport": "Importer",
     "consentSkip": "Ne pas importer",
+    "hostFailed": "Impossible de synchroniser l'hôte SSH {{name}} : {{error}}",
+    "syncFailed": "Échec de la synchronisation de la config SSH : {{error}}",
   },
   ru: {
     "settingsLabel": "Синхронизация конфигурации SSH",
@@ -69,6 +73,8 @@ export const messages: Record<PluginLocale, Record<string,string>> = {
     "consentPrompt_other": "Импортировать {{count}} хоста из ~/.ssh/config этого компьютера в личное хранилище этого аккаунта? Их SSH-ключи тоже будут импортированы.",
     "consentImport": "Импортировать",
     "consentSkip": "Не импортировать",
+    "hostFailed": "Не удалось синхронизировать SSH-хост {{name}}: {{error}}",
+    "syncFailed": "Ошибка синхронизации конфигурации SSH: {{error}}",
   },
   zh: {
     "settingsLabel": "SSH 配置同步",
@@ -90,6 +96,8 @@ export const messages: Record<PluginLocale, Record<string,string>> = {
     "consentPrompt_other": "要将此电脑 ~/.ssh/config 中的 {{count}} 个主机导入此账户的个人保险库吗？其 SSH 密钥也会一并导入。",
     "consentImport": "导入",
     "consentSkip": "不导入",
+    "hostFailed": "无法同步 SSH 主机 {{name}}：{{error}}",
+    "syncFailed": "SSH 配置同步失败：{{error}}",
   },
   tr: {
     "settingsLabel": "SSH yapılandırma eşitlemesi",
@@ -112,6 +120,8 @@ export const messages: Record<PluginLocale, Record<string,string>> = {
     "consentPrompt_other": "Bu bilgisayarın ~/.ssh/config dosyasındaki {{count}} sunucu bu hesabın Kişisel kasasına aktarılsın mı? SSH anahtarları da içe aktarılır.",
     "consentImport": "İçe aktar",
     "consentSkip": "İçe aktarma",
+    "hostFailed": "SSH sunucusu {{name}} eşitlenemedi: {{error}}",
+    "syncFailed": "SSH yapılandırma eşitlemesi başarısız: {{error}}",
   },
   cs: {
     "settingsLabel": "Synchronizace SSH config",
@@ -136,5 +146,7 @@ export const messages: Record<PluginLocale, Record<string,string>> = {
     "consentPrompt_other": "Importovat {{count}} hostitelů z ~/.ssh/config tohoto počítače do osobního trezoru tohoto účtu? Importují se i jejich SSH klíče.",
     "consentImport": "Importovat",
     "consentSkip": "Neimportovat",
+    "hostFailed": "SSH hostitele {{name}} nelze synchronizovat: {{error}}",
+    "syncFailed": "Synchronizace SSH config selhala: {{error}}",
   },
 };

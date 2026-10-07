@@ -260,3 +260,20 @@ describe("ssh-config asks each account before importing (#557)", () => {
     expect(bannerDismiss).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ssh-config sync failures are visible", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  test("a sync that throws outright raises an error toast, not just a log line", async () => {
+    const { api } = makeApi(true, { storage: GRANTED });
+    (api.fs.exists as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("disk on fire"));
+
+    const cleanup = register(api);
+    await flush();
+    await flush();
+
+    expect(api.notifications.toast).toHaveBeenCalledWith(expect.stringContaining("disk on fire"), expect.objectContaining({ severity: "error" }));
+
+    if (typeof cleanup === "function") cleanup();
+  });
+});
