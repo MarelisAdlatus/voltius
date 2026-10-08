@@ -70,6 +70,8 @@ curl -fsSL https://repo.voltius.app/setup.sh | sudo bash
 
 On Debian/Ubuntu and Fedora/RHEL it adds the signed Voltius repository, so updates arrive through your normal `sudo apt upgrade` / `sudo dnf upgrade`. Packages are GPG-signed and provided for both `amd64`/`x86_64` and `arm64`/`aarch64`. On Arch it installs `voltius-bin` from the AUR with `paru` or `yay`.
 
+Prebuilt Linux packages need **glibc 2.39 or newer**: Ubuntu 24.04+, Debian 13+, Fedora 40+, RHEL 10+ or another 2024-or-later distro. On older releases, use the Flatpak below or [build from source](#build).
+
 <details>
 <summary>Manual setup</summary>
 
