@@ -6,6 +6,11 @@ import { getJwt, getServerUrl } from "@/services/authTokens";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface TeamLockPolicy {
+  max_minutes: number;
+  force_vault: boolean;
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -15,6 +20,7 @@ export interface Team {
   role_ids: string[];
   permission_allow?: number;
   permission_deny?: number;
+  lock_policy?: TeamLockPolicy | null;
 }
 
 export type CreatedTeam = Pick<Team, "id" | "name" | "owner_id" | "created_at">;
@@ -77,11 +83,23 @@ export async function renameTeam(teamId: string, name: string): Promise<void> {
   if (!res.ok) throw new Error(i18n.t("common.error.failedToRenameTeam", { status: res.status }));
 }
 
+export async function setTeamLockPolicy(teamId: string, policy: TeamLockPolicy | null): Promise<void> {
+  const serverUrl = await getServerUrl();
+  if (!serverUrl) throw new Error(i18n.t("common.error.notConnectedToServer"));
+  const res = await fetchAuth(
+    `${serverUrl}/v1/teams/${teamId}/lock-policy`,
+    policy ? { method: "PUT", body: JSON.stringify(policy) } : { method: "DELETE" },
+  );
+  refuseIfPlanRequired(res);
+  if (res.status === 404) throw new Error(i18n.t("common.error.lockPolicyServerTooOld"));
+  if (!res.ok) throw new Error(i18n.t("common.error.failedToSaveLockPolicy", { status: res.status }));
+}
+
 export async function listTeams(): Promise<Team[]> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) return [];
   const res = await fetchAuth(`${serverUrl}/v1/teams`);
-  if (!res.ok) return [];
+  if (!res.ok) throw new Error(i18n.t("common.error.failedToListTeams", { status: res.status }));
   return res.json();
 }
 
