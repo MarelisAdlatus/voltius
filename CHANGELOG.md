@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-10-09
+
+### Fixed
+
+- App lock now applies at launch: force-closing the app and reopening it after the auto-lock time (or any launch with Immediately) locks instead of signing straight back in. A local account with no saved secrets can no longer be unlocked with any password (#593)
+- Typing `exit` in a PowerShell, cmd or WSL tab on Windows now closes the tab (#594)
+- Cancelling an SFTP upload also removes leftover partial files from earlier versions of the same file (#596)
+- When a transfer fails after a lost connection, the queue says Retry will resume where it stopped only for destinations that support it (local, SFTP, Docker, and WebDAV/FTP once resume is confirmed) (#597)
+
 ## [0.51.0] - 2026-10-09
 
 ### Added
