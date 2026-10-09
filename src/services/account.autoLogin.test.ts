@@ -1,4 +1,5 @@
 import { test, expect, vi, beforeEach } from "vitest";
+import { routeVaultSecret } from "@/test/vaultSecretRoute";
 
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -53,6 +54,11 @@ const UNWRAP = { dek: [1, 1, 1], x25519_private: [2, 2, 2] };
 
 function routeInvoke() {
   h.invoke.mockImplementation(async (cmd: string, args: Record<string, unknown> = {}) => {
+    const vs = routeVaultSecret(h.store, cmd, args);
+    if (vs.handled) {
+      if (h.keychainThrows) throw new Error("keychain unavailable");
+      return vs.value;
+    }
     switch (cmd) {
       case "keychain_get":
         if (h.keychainThrows) throw new Error("keychain unavailable");
@@ -176,7 +182,7 @@ test("autoLogin falls back to kek when the existing vault rejects dek", async ()
 });
 
 // Installing a proven-wrong key only defers the failure to the first secret read.
-test("autoLogin declines the session when no key opens the existing vault", async () => {
+test("autoLogin reports a key that does not open the existing vault", async () => {
   h.store.master_password = "pw";
   h.store.mode = "server";
   h.store.account_id = "acc";
@@ -184,7 +190,7 @@ test("autoLogin declines the session when no key opens the existing vault", asyn
   h.getVaultStatus.mockResolvedValue({ exists: true, path: "p" });
   h.verifyVaultKey.mockRejectedValue(wrongKey());
 
-  expect(await autoLogin()).toBe("declined");
+  expect(await autoLogin()).toBe("wrong-key");
   expect(h.setVaultKey).not.toHaveBeenCalled();
 });
 
@@ -324,4 +330,12 @@ test("autoLogin heals a missing mode to local for a password account", async () 
   expect(await autoLogin()).toBe("ok");
   expect(h.setVaultKey).toHaveBeenCalledWith(DERIVE_KEK);
   expect(h.store.mode).toBe("local");
+});
+
+test("autoLogin reports a sealed secret without prompting", async () => {
+  h.store.account_id = "acc";
+  h.store.mode = "local";
+  h.store.master_password_sealed = "S:pw";
+  expect(await autoLogin()).toBe("sealed");
+  expect(h.invoke).not.toHaveBeenCalledWith("vault_secret_get", expect.anything());
 });

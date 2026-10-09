@@ -7806,6 +7806,7 @@ dependencies = [
  "windows-registry 0.6.1",
  "windows-sys 0.59.0",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

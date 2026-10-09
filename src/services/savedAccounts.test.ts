@@ -1,4 +1,5 @@
 import { test, expect, vi, beforeEach } from "vitest";
+import { routeVaultSecret } from "@/test/vaultSecretRoute";
 
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -34,7 +35,7 @@ vi.mock("@/stores/persistedAccountUiState", () => ({
   dropAccountUiState: h.dropAccountUiState,
 }));
 
-import { getSavedAccounts, getSwitchTargets, saveCurrentAccount, removeSavedAccount, addAccount, switchToAccount, type SavedAccount } from "./savedAccounts";
+import { getSavedAccounts, getSwitchTargets, saveCurrentAccount, removeSavedAccount, addAccount, switchToAccount, forgetOtherPlainPasswords, type SavedAccount } from "./savedAccounts";
 import { ACCOUNT_CACHE_KEYS } from "./accountCacheKeys";
 import { GLOBAL_PROXY_PASSWORD_KEY } from "./teamVaultSecretKeys";
 
@@ -73,6 +74,11 @@ beforeEach(() => {
   h.valueCap = 0;
   h.readFails = false;
   h.invoke.mockImplementation(async (cmd: string, args: Record<string, unknown> = {}) => {
+    const vs = routeVaultSecret(h.store, cmd, args);
+    if (vs.handled) {
+      if (h.readFails && cmd !== "vault_secret_clear") throw new Error("Keychain read error");
+      return vs.value;
+    }
     switch (cmd) {
       case "keychain_get":
         if (h.readFails) throw new Error("Keychain read error");
@@ -381,4 +387,53 @@ test("the same email on another instance is a different account", async () => {
   const targets = await getSwitchTargets({ account_id: "a", email: CLOUD_A.email, server_url: CLOUD_A.server_url });
 
   expect(targets.map((a) => a.account_id)).toEqual(["a-self-hosted"]);
+});
+
+test("a bound account is saved and restored in its sealed form", async () => {
+  h.store = { account_id: "a1", mode: "server", master_password_sealed: "S:pw" };
+  await saveCurrentAccount();
+  const saved = JSON.parse(h.store[entryKey("a1")]);
+  expect(saved.master_password_sealed).toBe("S:pw");
+  expect(saved.master_password ?? null).toBeNull();
+  h.store = { [INDEX_KEY]: h.store[INDEX_KEY], [entryKey("a1")]: h.store[entryKey("a1")], master_password: "other" };
+  await switchToAccount(saved);
+  expect(h.store.master_password_sealed).toBe("S:pw");
+  expect(h.store.master_password).toBeUndefined();
+});
+
+test("binding an already saved account drops its plaintext copy", async () => {
+  h.store = { account_id: "a1", mode: "server", master_password: "pw" };
+  await saveCurrentAccount();
+  delete h.store.master_password;
+  h.store.master_password_sealed = "S:pw";
+  await saveCurrentAccount();
+  const saved = JSON.parse(h.store[entryKey("a1")]);
+  expect(saved.master_password).toBeUndefined();
+  expect(saved.master_password_sealed).toBe("S:pw");
+});
+
+test("switching away clears the outgoing account's secret in either form", async () => {
+  h.store = { account_id: "a1", mode: "server", master_password_sealed: "S:pw" };
+  await switchToAccount(CLOUD_B);
+  expect(h.store.master_password_sealed).toBeUndefined();
+  expect(h.store.master_password).toBe(CLOUD_B.master_password);
+});
+
+test("binding one account drops the plaintext passwords the others keep", async () => {
+  seed(CLOUD_A, CLOUD_B);
+  h.store.account_id = "a";
+  await forgetOtherPlainPasswords();
+  expect(JSON.parse(h.store[entryKey("a")]).master_password).toBe(CLOUD_A.master_password);
+  expect(JSON.parse(h.store[entryKey("b")]).master_password).toBeUndefined();
+  expect(JSON.parse(h.store[entryKey("b")]).jwt).toBe(CLOUD_B.jwt);
+});
+
+test("a bound account's entry stores no empty secret field and fits under the Windows cap", async () => {
+  h.valueCap = WINDOWS_BLOB_CAP;
+  const blob = "VS1".padEnd(140, "x");
+  h.store = { ...Object.fromEntries(Object.entries(cloudAccount("a")).filter(([k]) => k !== "master_password")), master_password_sealed: blob };
+  await saveCurrentAccount();
+  const raw = h.store[entryKey("a")];
+  expect(raw).not.toContain("master_password\":null");
+  expect(JSON.parse(raw).master_password_sealed).toBe(blob);
 });
